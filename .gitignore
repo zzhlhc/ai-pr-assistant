@@ -39,5 +39,5 @@ build/
 .DS_Store
 ### 本地私密配置 ###
 src/main/resources/application-local.yml
-/docs/开发与学习计划.md
+docs/
 .idea/

@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-pr-assistant
+
+  ai:
+    openai:
+      # 三个环境变量不设置也能启动，但调用模型会失败。
+      # 推荐本地用 application-local.yml 覆盖，该文件已在 .gitignore 中忽略。
+      api-key: ${LLM_API_KEY:sk-placeholder}
+      base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+      chat:
+        options:
+          model: ${LLM_MODEL:deepseek-chat}
+          # 代码评审要的是稳定和准确，不是发散
+          temperature: 0.2
+
+gitee:
+  token: ${GITEE_TOKEN:}
+  base-url: https://gitee.com/api/v5
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    com.zhouziheng: debug

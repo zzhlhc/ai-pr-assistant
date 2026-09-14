@@ -6,7 +6,6 @@ import com.zhouziheng.review.diff.FileDiff;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -39,6 +38,7 @@ public class SymbolExtractor {
     public ReferencedSymbols extract(List<FileDiff> diffs) {
         Set<String> imports = new LinkedHashSet<>();
         Map<String, Integer> counter = new HashMap<>();
+        Map<String, Integer> fileFrequency = new HashMap<>();
         Set<String> changedTypes = new HashSet<>();
 
         for (FileDiff file : diffs) {
@@ -47,34 +47,50 @@ public class SymbolExtractor {
                 changedTypes.add(ownType);
             }
 
+            Set<String> inThisFile = new HashSet<>();
             for (DiffHunk hunk : file.hunks()) {
                 for (DiffLine line : hunk.lines()) {
                     // 删除行在新文件里已经不存在，模型要评论也应该基于现存代码
                     if (line.type() == '-') {
                         continue;
                     }
-                    scan(line.content(), imports, counter);
+                    scan(line.content(), imports, counter, inThisFile);
                 }
             }
+            inThisFile.forEach(name -> fileFrequency.merge(name, 1, Integer::sum));
         }
 
         // 本次改动自己的类不用召回：完整内容本来就在 diff 里，再把定义塞一遍纯属浪费 token
         changedTypes.forEach(counter::remove);
 
-        // 这里不截断：截断必须发生在"能不能在索引里查到"之后。
-        // 一个 commit 实测扫出 107 个去重符号，Top30 里只有 14 个真的在仓库里，
-        // 另外 16 个（String、List、Collectors……）是 JDK 和框架类型，白占名额。
-        // 名额被它们占掉之后，FeedbackProcessingTeam 这种频次低、但确实存在的类排在 55 名，永远进不来。
-        // 排序在这里做（频次是唯一能拿到的相关性信号），截断交给查索引的那一步。
-        List<String> ranked = counter.entrySet().stream()
-                .sorted(Comparator.comparingInt((Map.Entry<String, Integer> e) -> e.getValue()).reversed())
-                .map(Map.Entry::getKey)
+        // 权重用 TF-IDF，不是单纯的词频。
+        // 只按词频排的话，出现次数是"跨文件累加"出来的：一个符号在越多的文件里出现，累加值就越高。
+        // 于是 String、List、Override 这种每个文件都在用的类型天然排在最前面，
+        // 而真正体现这次改动主题的类（只在少数文件里被反复提到）反而排在后面。
+        // IDF 就是修这个的：df 越接近文件总数，说明它越像语法层面的通用词，权重越低。
+        // 注意这里只算权重、不排序：排序要等索引过滤之后再做。
+        int docCount = Math.max(diffs.size(), 1);
+        List<ReferencedSymbols.Symbol> weighted = counter.entrySet().stream()
+                .map(e -> new ReferencedSymbols.Symbol(e.getKey(),
+                        weight(e.getValue(), fileFrequency.getOrDefault(e.getKey(), 1), docCount)))
                 .toList();
 
-        return new ReferencedSymbols(new ArrayList<>(imports), ranked);
+        return new ReferencedSymbols(new ArrayList<>(imports), weighted);
     }
 
-    private void scan(String text, Set<String> imports, Map<String, Integer> counter) {
+    /**
+     * TF-IDF 权重。IDF 用平滑形式 {@code log((N+1)/(df+1)) + 1}：
+     * <ul>
+     *   <li>df 等于文件总数时（每个文件都出现）IDF 取到最小值 1，权重退回纯词频 ——
+     *       这类符号本来就该被索引挡掉，不需要在排序上特殊处理</li>
+     *   <li>只有一个文件的 diff 时 N=1、df=1，IDF 恒为 1，整体退化成纯词频，不会因为样本不足算出怪异结果</li>
+     * </ul>
+     */
+    private double weight(int tf, int df, int docCount) {
+        return tf * (Math.log((docCount + 1.0) / (df + 1.0)) + 1.0);
+    }
+
+    private void scan(String text, Set<String> imports, Map<String, Integer> counter, Set<String> inThisFile) {
         Matcher importMatcher = IMPORT.matcher(text);
         if (importMatcher.find()) {
             imports.add(importMatcher.group(1));
@@ -83,7 +99,9 @@ public class SymbolExtractor {
 
         Matcher typeMatcher = TYPE_NAME.matcher(text);
         while (typeMatcher.find()) {
-            counter.merge(typeMatcher.group(1), 1, Integer::sum);
+            String name = typeMatcher.group(1);
+            counter.merge(name, 1, Integer::sum);
+            inThisFile.add(name);
         }
     }
 

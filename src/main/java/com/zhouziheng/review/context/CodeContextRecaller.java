@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -108,25 +109,31 @@ public class CodeContextRecaller {
     /**
      * 把符号解析成文件路径。
      * <p>
-     * 顺序就是优先级：identifiers 按出现频次降序（出现得越多说明越是这次改动的核心），
-     * 之后才轮到 import 和从被改动文件 import 清单里补出来的依赖。
+     * 顺序就是优先级：identifiers 按 TF-IDF 权重降序，之后才轮到 import
+     * 和从被改动文件 import 清单里补出来的依赖（那两个通道给的是全限定名，本身就是精确的）。
      * <p>
-     * 名额在这里才卡：查索引是纯内存操作，先让所有符号都过一遍，
-     * 能查到文件的才有资格占用名额，查不到的直接放行不计数。
+     * <b>先过滤、再排序</b>，顺序不能反。符号权重是在"整个 diff 出现过的所有词"上算出来的，
+     * 里面混着 String、List、Override 这类每个文件都在用的语法词，它们词频高、权重看起来不低，
+     * 但仓库里根本没有对应的类。先排序的话，排名前列会被这些词占满，
+     * 真正存在的类被挤到看不到的位置；先过滤再排，参评的就只剩仓库里真实存在的类，
+     * 权重才是在同一条起跑线上比较。
      */
     private List<String> resolvePaths(RepoFileIndex index, ReferencedSymbols symbols) {
         Set<String> paths = new LinkedHashSet<>();
-        int matched = 0;
-        for (String name : symbols.identifiers()) {
-            if (matched >= MAX_IDENTIFIER_CANDIDATES) {
-                break;
-            }
-            String path = index.resolve(name);
-            if (path != null) {
-                matched++;
-                paths.add(path);
-            }
+
+        List<ReferencedSymbols.Symbol> ranked = symbols.identifiers().stream()
+                .filter(symbol -> index.resolve(symbol.name()) != null)
+                .sorted(Comparator.comparingDouble(ReferencedSymbols.Symbol::weight).reversed()
+                        .thenComparing(ReferencedSymbols.Symbol::name))
+                .limit(MAX_IDENTIFIER_CANDIDATES)
+                .toList();
+        if (log.isDebugEnabled()) {
+            log.debug("identifiers 通道排序（已剔除仓库里不存在的符号）| {}", ranked.stream()
+                    .map(symbol -> "%s(%.1f)".formatted(symbol.name(), symbol.weight()))
+                    .toList());
         }
+        ranked.forEach(symbol -> paths.add(index.resolve(symbol.name())));
+
         for (String fqn : symbols.imports()) {
             String path = index.resolveFqn(fqn);
             if (path != null) {

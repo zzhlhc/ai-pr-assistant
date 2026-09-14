@@ -9,10 +9,16 @@ import java.util.Set;
  *
  * @param imports     形如 coopwire.common.base.module.file.FileInfo 的全限定名，
  *                    来自 import 语句，最精确，优先级最高
- * @param identifiers 代码里出现的类名（如 ApiParameterGroup），按出现次数降序，
- *                    可能包含 JDK 类型等噪声，靠索引能否命中来过滤
+ * @param identifiers 代码里出现的类名（如 ApiParameterGroup）和它们的 TF-IDF 权重。
+ *                    <b>故意不在这里排序</b>：权重只有在"仓库里真实存在的类"之间比较才有意义，
+ *                    排序交给 {@link CodeContextRecaller}，让它先用索引把
+ *                    String、List、Override 这类仓库里没有的符号剔掉再排
  */
-public record ReferencedSymbols(List<String> imports, List<String> identifiers) {
+public record ReferencedSymbols(List<String> imports, List<Symbol> identifiers) {
+
+    /** 一个候选符号和它的 TF-IDF 权重 */
+    public record Symbol(String name, double weight) {
+    }
 
     public static ReferencedSymbols empty() {
         return new ReferencedSymbols(List.of(), List.of());

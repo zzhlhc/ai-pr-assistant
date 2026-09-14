@@ -9,12 +9,15 @@ import {
   SEVERITY_TAG,
   STATUS_TAG,
   STATUS_TEXT,
+  compressionPercent,
   fileName,
   formatCost,
+  formatNumber,
   formatSeconds,
   formatTime,
   shortSha,
   sortBySeverity,
+  toolLabel,
 } from '../utils/display'
 
 const route = useRoute()
@@ -35,6 +38,25 @@ const severityCounts = computed(() => {
   }
   return counts
 })
+
+// 这次评审参考过的相关代码。历史任务和早期的纯 diff 评审没有这部分，所以整体判空
+// agent 式的执行轨迹。预塞式评审没有这一步，所以整体判空
+const steps = computed(() => task.value?.steps ?? [])
+const toolCallCount = computed(() => steps.value.filter((step) => step.toolName).length)
+const agentRounds = computed(() => (steps.value.length ? steps.value[steps.value.length - 1].round : 0))
+const readFiles = computed(() => {
+  const seen: string[] = []
+  for (const step of steps.value) {
+    if (step.toolName === 'read_file' && step.target && !seen.includes(step.target)) {
+      seen.push(step.target)
+    }
+  }
+  return seen
+})
+
+const contexts = computed(() => task.value?.contexts ?? [])
+const recallChars = computed(() => contexts.value.reduce((sum, file) => sum + file.chars, 0))
+const recallRawChars = computed(() => contexts.value.reduce((sum, file) => sum + file.rawChars, 0))
 
 async function load(id: string) {
   unsubscribe?.()
@@ -168,6 +190,89 @@ onUnmounted(() => unsubscribe?.())
           </el-table-column>
           <el-table-column prop="issue" label="问题" min-width="320" />
         </el-table>
+
+        <template v-if="steps.length">
+          <div class="section-title">Agent 执行轨迹（模型自己决定读哪些代码）</div>
+
+          <el-descriptions :column="4" border size="small" class="stats">
+            <el-descriptions-item label="总轮数">{{ agentRounds }}</el-descriptions-item>
+            <el-descriptions-item label="工具调用">{{ toolCallCount }} 次</el-descriptions-item>
+            <el-descriptions-item label="读过文件">{{ readFiles.length }} 个</el-descriptions-item>
+            <el-descriptions-item label="整链路耗时">
+              {{ formatSeconds(task.elapsedMillis) }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <el-timeline class="timeline">
+            <el-timeline-item
+              v-for="(step, index) in steps"
+              :key="index"
+              :type="step.toolName ? 'primary' : 'success'"
+              :hollow="!step.toolName"
+              placement="top"
+            >
+              <div class="step-head">
+                <span class="step-round">第 {{ step.round }} 轮</span>
+                <el-tag :type="step.toolName ? 'warning' : 'success'" size="small">
+                  {{ toolLabel(step.toolName) }}
+                </el-tag>
+                <span class="step-meta">
+                  in {{ formatNumber(step.promptTokens) }} / out
+                  {{ formatNumber(step.completionTokens) }} · {{ formatSeconds(step.elapsedMillis) }}
+                </span>
+              </div>
+              <div v-if="step.target" class="step-target">{{ step.target }}</div>
+              <p v-if="step.thought" class="step-thought">{{ step.thought }}</p>
+              <pre v-if="step.resultSummary" class="step-result">{{ step.resultSummary }}</pre>
+            </el-timeline-item>
+          </el-timeline>
+
+          <p class="hint">
+            每一轮都是模型自己的决定：它先看到 diff 里不认识的名字，再决定去查哪个类、读哪个文件的哪几行。
+            轨迹里没出现的文件，说明它判断不需要看。这正是 agent 式和预塞式最大的区别 ——
+            上下文不是我们事先准备好的，而是它在循环里用出来的。
+            in / out 是这一轮的输入输出 token（多轮之间重复的历史会命中缓存，所以实际计费比 in 显示的少）。
+          </p>
+        </template>
+
+        <template v-if="contexts.length">
+          <div class="section-title">本次 RAG 召回（模型评审时参考的相关代码）</div>
+
+          <el-descriptions :column="4" border size="small" class="stats">
+            <el-descriptions-item label="召回文件">{{ contexts.length }}</el-descriptions-item>
+            <el-descriptions-item label="骨架字符">{{ formatNumber(recallChars) }}</el-descriptions-item>
+            <el-descriptions-item label="原始字符">{{ formatNumber(recallRawChars) }}</el-descriptions-item>
+            <el-descriptions-item label="压缩率">
+              {{ compressionPercent(recallChars, recallRawChars) }}%
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <el-table :data="contexts" size="small" style="width: 100%">
+            <el-table-column label="文件" min-width="260" show-overflow-tooltip>
+              <template #default="{ row }">{{ fileName(row.path) }}</template>
+            </el-table-column>
+            <el-table-column label="路径" min-width="380" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="path">{{ row.path }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="骨架" width="100" align="right">
+              <template #default="{ row }">{{ formatNumber(row.chars) }}</template>
+            </el-table-column>
+            <el-table-column label="原始" width="100" align="right">
+              <template #default="{ row }">{{ formatNumber(row.rawChars) }}</template>
+            </el-table-column>
+            <el-table-column label="压缩率" width="90" align="right">
+              <template #default="{ row }">{{ compressionPercent(row.chars, row.rawChars) }}%</template>
+            </el-table-column>
+          </el-table>
+
+          <p class="hint">
+            上面每一条结论都建立在这些上下文之上，所以单独列出来。
+            召回的是「骨架」：保留字段和方法签名、丢掉方法体，用最小的体积让模型看到定义。
+            这部分内容也计入了上面的 token 和费用。
+          </p>
+        </template>
       </template>
     </el-card>
   </div>
@@ -241,5 +346,70 @@ onUnmounted(() => unsubscribe?.())
   white-space: pre-wrap;
   word-break: break-all;
   font-size: 12px;
+}
+
+.path {
+  color: #909399;
+  font-size: 12px;
+}
+
+.timeline {
+  padding-left: 4px;
+  margin-top: 4px;
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.step-round {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.step-meta {
+  color: #a8abb2;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.step-target {
+  color: #606266;
+  font-size: 12px;
+  font-family: SFMono-Regular, Consolas, monospace;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.step-thought {
+  color: #303133;
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.step-result {
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #606266;
+}
+
+.hint {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 12px 0 0;
 }
 </style>

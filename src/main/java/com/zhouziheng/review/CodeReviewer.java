@@ -18,8 +18,6 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -61,10 +59,10 @@ public class CodeReviewer {
 
     private final ChatClient chatClient;
     private final ReviewPromptBuilder promptBuilder;
-    private final ReviewPricingProperties pricing;
+    private final TokenPricing pricing;
 
     public CodeReviewer(ChatClient.Builder chatClientBuilder, ReviewPromptBuilder promptBuilder,
-                        ReviewPricingProperties pricing) {
+                        TokenPricing pricing) {
         this.chatClient = chatClientBuilder
                 .defaultOptions(OpenAiChatOptions.builder().timeout(REQUEST_TIMEOUT))
                 .build();
@@ -125,24 +123,17 @@ public class CodeReviewer {
 
     /**
      * 把 Spring AI 的用量换算成我们自己的模型。
-     * 缓存命中的输入 token 单价更低，所以要把它从 promptTokens 里拆出来单独计价。
-     * 模型没回传用量时返回 null —— 不编数字。
+     * 计价口径和 agent 式那条链路共用 {@link TokenPricing} —— 两条链路的费用要横向对比，
+     * 各算各的迟早会算飞。模型没回传用量时返回 null，不编数字。
      */
     private TokenUsage toTokenUsage(Usage usage) {
         if (usage.getPromptTokens() == null) {
             return null;
         }
 
-        int promptTokens = usage.getPromptTokens();
-        int completionTokens = usage.getCompletionTokens();
         long cachedTokens = usage.getCacheReadInputTokens() == null ? 0 : usage.getCacheReadInputTokens();
-
-        BigDecimal cost = priceOf(promptTokens - cachedTokens, pricing.inputPricePerMillion())
-                .add(priceOf(cachedTokens, pricing.cachedInputPricePerMillion()))
-                .add(priceOf(completionTokens, pricing.outputPricePerMillion()))
-                .setScale(4, RoundingMode.HALF_UP);
-
-        return new TokenUsage(promptTokens, completionTokens, usage.getTotalTokens(), cachedTokens, cost);
+        return pricing.calculate(usage.getPromptTokens(), usage.getCompletionTokens(),
+                usage.getTotalTokens(), cachedTokens);
     }
 
     private String describeUsage(TokenUsage usage) {
@@ -152,11 +143,6 @@ public class CodeReviewer {
         return "prompt=%d（其中缓存命中 %d） | completion=%d | total=%d | 预估费用≈%s 元".formatted(
                 usage.promptTokens(), usage.cachedTokens(), usage.completionTokens(),
                 usage.totalTokens(), usage.cost().toPlainString());
-    }
-
-    private BigDecimal priceOf(long tokens, BigDecimal pricePerMillion) {
-        return pricePerMillion.multiply(BigDecimal.valueOf(tokens))
-                .divide(BigDecimal.valueOf(1_000_000), 6, RoundingMode.HALF_UP);
     }
 
     /**

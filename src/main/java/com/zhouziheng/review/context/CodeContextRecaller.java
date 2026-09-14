@@ -78,11 +78,13 @@ public class CodeContextRecaller {
 
         List<CodeContext> contexts = new ArrayList<>();
         int rawChars = 0;
+        int fetched = 0;
 
         for (String path : candidates) {
             if (contexts.size() >= maxFiles || budget <= 0) {
                 break;
             }
+            fetched++;
             String source = gitee.getFileContent(owner, repo, path, sha);
             if (source == null) {
                 continue;
@@ -96,8 +98,8 @@ public class CodeContextRecaller {
             contexts.add(new CodeContext(path, skeleton, source.length()));
         }
 
-        log.info("代码上下文召回 | 参数={} | 候选文件={} | 实际召回={} | 骨架字符={} | 原始字符={}",
-                options.signature(), candidates.size(), contexts.size(),
+        log.info("代码上下文召回 | 参数={} | 候选文件={} | 拉取文件={} | 实际召回={} | 骨架字符={} | 原始字符={}",
+                options.signature(), candidates.size(), fetched, contexts.size(),
                 options.totalBudgetOrDefault() - budget, rawChars);
         for (CodeContext context : contexts) {
             log.info("  召回 {}（{} 字符 → {} 压缩率）", context.path(),

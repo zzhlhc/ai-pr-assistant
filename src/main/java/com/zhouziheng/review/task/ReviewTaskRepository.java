@@ -1,5 +1,6 @@
 package com.zhouziheng.review.task;
 
+import com.zhouziheng.review.agent.AgentStep;
 import com.zhouziheng.review.context.RecalledFile;
 import com.zhouziheng.review.model.ReviewIssue;
 import com.zhouziheng.review.model.ReviewReport;
@@ -98,12 +99,12 @@ public class ReviewTaskRepository {
                             """)
                     .param("taskId", taskId)
                     .param("severity", issue.severity().name())
-                    .param("category", issue.category())
-                    .param("file", issue.file())
+                    .param("category", fit(issue.category(), 32))
+                    .param("file", fit(issue.file(), 300))
                     .param("lineNo", issue.line())
-                    .param("issue", issue.issue())
-                    .param("suggestion", issue.suggestion())
-                    .param("evidence", issue.evidence())
+                    .param("issue", fit(issue.issue(), 1000))
+                    .param("suggestion", fit(issue.suggestion(), 1000))
+                    .param("evidence", fit(issue.evidence(), 1000))
                     .update();
         }
     }
@@ -120,6 +121,36 @@ public class ReviewTaskRepository {
                     .param("path", context.path())
                     .param("chars", context.chars())
                     .param("rawChars", context.rawChars())
+                    .update();
+        }
+    }
+
+    /**
+     * agent 式评审的执行轨迹。
+     * 它和 contexts 是互补的两种上下文证据：预塞式有 contexts 没 steps，agent 式反过来。
+     */
+    public void replaceSteps(String taskId, List<AgentStep> steps) {
+        jdbc.sql("DELETE FROM review_agent_step WHERE task_id = :taskId").param("taskId", taskId).update();
+        for (AgentStep step : steps) {
+            jdbc.sql("""
+                            INSERT INTO review_agent_step (task_id, round_no, thought, tool_name, target,
+                                                           arguments, result_summary, prompt_tokens,
+                                                           completion_tokens, cached_tokens, elapsed_ms)
+                            VALUES (:taskId, :roundNo, :thought, :toolName, :target,
+                                    :arguments, :resultSummary, :promptTokens,
+                                    :completionTokens, :cachedTokens, :elapsedMillis)
+                            """)
+                    .param("taskId", taskId)
+                    .param("roundNo", step.round())
+                    .param("thought", step.thought())
+                    .param("toolName", step.toolName())
+                    .param("target", step.target())
+                    .param("arguments", step.arguments())
+                    .param("resultSummary", step.resultSummary())
+                    .param("promptTokens", step.promptTokens())
+                    .param("completionTokens", step.completionTokens())
+                    .param("cachedTokens", step.cachedTokens())
+                    .param("elapsedMillis", step.elapsedMillis())
                     .update();
         }
     }
@@ -216,7 +247,31 @@ public class ReviewTaskRepository {
 
     private ReviewTask withDetails(ReviewTask task) {
         return task.withReport(new ReviewReport(task.report().summary(), findIssues(task.id())))
-                .withContexts(findContexts(task.id()));
+                .withContexts(findContexts(task.id()))
+                .withSteps(findSteps(task.id()));
+    }
+
+    private List<AgentStep> findSteps(String taskId) {
+        return jdbc.sql("""
+                        SELECT round_no, thought, tool_name, target, arguments, result_summary,
+                               prompt_tokens, completion_tokens, cached_tokens, elapsed_ms
+                          FROM review_agent_step
+                         WHERE task_id = :taskId
+                         ORDER BY id
+                        """)
+                .param("taskId", taskId)
+                .query((rs, rowNum) -> new AgentStep(
+                        rs.getInt("round_no"),
+                        rs.getString("thought"),
+                        rs.getString("tool_name"),
+                        rs.getString("target"),
+                        rs.getString("arguments"),
+                        rs.getString("result_summary"),
+                        rs.getInt("prompt_tokens"),
+                        rs.getInt("completion_tokens"),
+                        rs.getInt("cached_tokens"),
+                        rs.getLong("elapsed_ms")))
+                .list();
     }
 
     private List<ReviewIssue> findIssues(String taskId) {
@@ -272,6 +327,7 @@ public class ReviewTaskRepository {
                 // 明细单独查，先放个只有 summary 的空壳
                 new ReviewReport(rs.getString("summary"), List.of()),
                 List.of(),
+                List.of(),
                 rs.getString("error"),
                 usage,
                 rs.getObject("elapsed_ms", Long.class),
@@ -281,6 +337,18 @@ public class ReviewTaskRepository {
     }
 
     private String summaryOf(ReviewTask task) {
-        return task.report() == null ? null : task.report().summary();
+        return task.report() == null ? null : fit(task.report().summary(), 2000);
+    }
+
+    /**
+     * 按列宽截断。
+     * 这些字段的内容全部来自模型，长度不受我们控制：超长时 MySQL 严格模式会直接报错，
+     * 而一次评审要跑一两分钟，不该因为一句描述太长在最后一步全部作废。
+     */
+    private String fit(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength);
     }
 }

@@ -8,6 +8,7 @@ import com.zhouziheng.review.context.CodeContextRecaller;
 import com.zhouziheng.review.context.FileImportResolver;
 import com.zhouziheng.review.context.RecallPreview;
 import com.zhouziheng.review.context.RecallResult;
+import com.zhouziheng.review.agent.AgentReviewer;
 import com.zhouziheng.review.context.RecalledFile;
 import com.zhouziheng.review.context.ReferencedSymbols;
 import com.zhouziheng.review.context.SymbolExtractor;
@@ -17,6 +18,7 @@ import com.zhouziheng.review.model.ReviewIssue;
 import com.zhouziheng.review.model.ReviewReport;
 import com.zhouziheng.review.model.ReviewResult;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -34,15 +36,17 @@ public class ReviewService {
 
     private final GiteeClient giteeClient;
     private final CodeReviewer codeReviewer;
+    private final AgentReviewer agentReviewer;
     private final SymbolExtractor symbolExtractor;
     private final FileImportResolver fileImportResolver;
     private final CodeContextRecaller contextRecaller;
 
-    public ReviewService(GiteeClient giteeClient, CodeReviewer codeReviewer,
+    public ReviewService(GiteeClient giteeClient, CodeReviewer codeReviewer, AgentReviewer agentReviewer,
                          SymbolExtractor symbolExtractor, FileImportResolver fileImportResolver,
                          CodeContextRecaller contextRecaller) {
         this.giteeClient = giteeClient;
         this.codeReviewer = codeReviewer;
+        this.agentReviewer = agentReviewer;
         this.symbolExtractor = symbolExtractor;
         this.fileImportResolver = fileImportResolver;
         this.contextRecaller = contextRecaller;
@@ -62,11 +66,37 @@ public class ReviewService {
         String[] parts = splitRepo(repo);
         onStage.accept("拉取 commit 与 diff");
         GiteeCommit commit = giteeClient.getCommit(parts[0], parts[1], commitSha);
-
         List<FileDiff> diffs = toFileDiffs(commit);
 
-        // 召回"这次改动引用了、但 diff 里看不到定义"的代码。
-        // 它只影响评审质量，不影响评审能否进行，所以失败时静默退化成纯 diff 评审。
+        // 两条链路拿到的 diff 完全一样，唯一的差异是"上下文从哪来"。
+        // 这样同一个 commit 换策略跑出来的两份报告才有可比性。
+        return options.isAgent()
+                ? agentReview(parts, repo, commitSha, commit, diffs, options, onStage)
+                : preloadReview(parts, repo, commitSha, commit, diffs, options, onStage);
+    }
+
+    /**
+     * agent 式：上下文由模型自己在循环里读出来，我们只提供查找和读取的工具。
+     * 耗时记的是整条链路（含建索引和每一轮往返），因为它就是要拿来和预塞式的单次调用对比的。
+     */
+    private ReviewResult agentReview(String[] parts, String repo, String commitSha, GiteeCommit commit,
+                                     List<FileDiff> diffs, ReviewOptions options, Consumer<String> onStage) {
+        long startMillis = System.currentTimeMillis();
+        AgentReviewer.Outcome outcome = agentReviewer.review(parts[0], parts[1], commitSha,
+                commit.commit().message(), diffs, options, onStage);
+        long elapsedMillis = System.currentTimeMillis() - startMillis;
+
+        onStage.accept("校验行号并整理报告");
+        return new ReviewResult(verify(outcome.report(), diffs), outcome.usage(), elapsedMillis,
+                List.of(), outcome.trace());
+    }
+
+    /**
+     * 预塞式：由我们先算出 diff 引用了哪些类，把它们的骨架一次性塞进提示词。
+     * 召回失败只影响评审质量、不影响评审能否进行，所以那一段是静默退化的。
+     */
+    private ReviewResult preloadReview(String[] parts, String repo, String commitSha, GiteeCommit commit,
+                                       List<FileDiff> diffs, ReviewOptions options, Consumer<String> onStage) {
         onStage.accept("召回相关代码定义");
         List<CodeContext> contexts = contextRecaller.recall(parts[0], parts[1], commitSha,
                 resolveSymbols(parts[0], parts[1], commitSha, diffs), options);
@@ -113,6 +143,9 @@ public class ReviewService {
     /**
      * 证据回溯：模型给出的 file + line 必须能在 diff 里找到，找不到的条目直接丢弃。
      * 这是抑制幻觉最有效的一道防线。
+     * <p>
+     * 顺带丢掉没有正文的条目：这类条目落库时会撞上 issue 列的 NOT NULL 约束，
+     * 让整次评审在最后一秒失败。一条没有描述的"问题"本来也没有任何价值。
      */
     private ReviewReport verify(ReviewReport report, List<FileDiff> diffs) {
         Map<String, Set<Integer>> validLines = diffs.stream()
@@ -120,6 +153,7 @@ public class ReviewService {
 
         List<ReviewIssue> issues = report.issues() == null ? List.of() : report.issues();
         List<ReviewIssue> verified = issues.stream()
+                .filter(issue -> StringUtils.hasText(issue.issue()))
                 .filter(issue -> validLines.getOrDefault(issue.file(), Set.of()).contains(issue.line()))
                 .toList();
 

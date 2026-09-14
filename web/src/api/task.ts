@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ReviewStats, ReviewTask, TaskSummary } from '../types/task'
+import type { RecallPreview, ReviewOptions, ReviewStats, ReviewTask, TaskSummary } from '../types/task'
 
 const http = axios.create({
   baseURL: '/api',
@@ -7,8 +7,30 @@ const http = axios.create({
   timeout: 15_000,
 })
 
-export async function createTask(repo: string, commitSha: string): Promise<ReviewTask> {
-  const { data } = await http.post<ReviewTask>('/tasks', { repo, commitSha })
+export async function createTask(
+  repo: string,
+  commitSha: string,
+  options?: ReviewOptions,
+): Promise<ReviewTask> {
+  const { data } = await http.post<ReviewTask>('/tasks', { repo, commitSha, options })
+  return data
+}
+
+/**
+ * 预览召回：只跑"拉 diff + 召回相关代码"，不调用模型。
+ * 超时单独放宽到 60 秒 —— 这一步要建仓库索引（约 2 秒）再逐个拉文件，
+ * 实测波动能到 15 秒，用默认的 15 秒会把正常的预览掐断。
+ */
+export async function previewRecall(
+  repo: string,
+  commitSha: string,
+  options?: ReviewOptions,
+): Promise<RecallPreview> {
+  const { data } = await http.post<RecallPreview>(
+    '/context/preview',
+    { repo, commitSha, options },
+    { timeout: 60_000 },
+  )
   return data
 }
 

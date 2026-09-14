@@ -1,6 +1,8 @@
 package com.zhouziheng.review.task;
 
 import com.zhouziheng.review.ReviewOptions;
+import com.zhouziheng.review.agent.AgentReviewer;
+import com.zhouziheng.review.agent.AgentStep;
 import com.zhouziheng.review.ReviewService;
 import com.zhouziheng.review.model.ReviewResult;
 import com.zhouziheng.review.prompt.ReviewPromptBuilder;
@@ -64,8 +66,12 @@ public class ReviewTaskService {
      */
     public ReviewTask submit(String repo, String commitSha, ReviewOptions options) {
         String signature = options.signature();
-        ReviewTask cached = repository.findCached(repo, commitSha,
-                ReviewPromptBuilder.PROMPT_VERSION, signature);
+        // 两种策略的提示词是两套独立的东西，版本号各记各的 ——
+        // 否则改坏了 agent 的提示词，预塞式的缓存也会跟着一起失效。
+        String promptVersion = options.isAgent()
+                ? AgentReviewer.PROMPT_VERSION
+                : ReviewPromptBuilder.PROMPT_VERSION;
+        ReviewTask cached = repository.findCached(repo, commitSha, promptVersion, signature);
         if (cached != null) {
             cacheHits.incrementAndGet();
             log.info("命中缓存 | repo={} | commit={} | 提示词={} | 召回参数={} | 复用任务={} | 原耗时={}ms",
@@ -74,7 +80,7 @@ public class ReviewTaskService {
         }
 
         ReviewTask task = ReviewTask.pending(UUID.randomUUID().toString().substring(0, 8),
-                repo, commitSha, ReviewPromptBuilder.PROMPT_VERSION);
+                repo, commitSha, promptVersion);
         repository.insert(task, signature);
         store.save(task);
         executor.execute(() -> run(task, options));
@@ -109,13 +115,16 @@ public class ReviewTaskService {
         try {
             ReviewResult result = reviewService.review(task.repo(), task.commitSha(), options,
                     stage -> persist(latest(task).running(stage)));
+            List<AgentStep> steps = result.trace() == null ? List.of() : result.trace().steps();
             ReviewTask finished = latest(task).success(result.report(), result.usage(),
-                    result.elapsedMillis(), result.contexts());
+                    result.elapsedMillis(), result.contexts(), steps);
             repository.replaceIssues(finished.id(), finished.report().issues());
             repository.replaceContexts(finished.id(), finished.contexts());
+            repository.replaceSteps(finished.id(), steps);
             persist(finished);
-            log.info("任务完成 | id={} | repo={} | commit={} | 召回文件={} | 耗时={}ms",
-                    task.id(), task.repo(), task.commitSha(), finished.contexts().size(), result.elapsedMillis());
+            log.info("任务完成 | id={} | repo={} | commit={} | 召回文件={} | agent 轮数={} | 耗时={}ms",
+                    task.id(), task.repo(), task.commitSha(), finished.contexts().size(),
+                    steps.isEmpty() ? "-" : result.trace().rounds(), result.elapsedMillis());
         } catch (Exception e) {
             persist(latest(task).failed(e.getMessage(), System.currentTimeMillis() - startMillis));
             log.error("任务失败 | id={} | repo={} | commit={}", task.id(), task.repo(), task.commitSha(), e);

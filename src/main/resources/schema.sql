@@ -40,6 +40,25 @@ CREATE TABLE IF NOT EXISTS review_task_context
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT '评审召回的相关代码';
 
+CREATE TABLE IF NOT EXISTS review_agent_step
+(
+    id                BIGINT AUTO_INCREMENT,
+    task_id           VARCHAR(32)   NOT NULL,
+    round_no          INT           NOT NULL COMMENT '第几轮模型调用',
+    thought           TEXT COMMENT '模型这一轮说的话，是它为什么去读那个文件的唯一线索',
+    tool_name         VARCHAR(32) COMMENT '调用的工具；为空表示这一轮模型没调工具、直接给出了结论',
+    target            VARCHAR(300) COMMENT '操作对象：查符号时是符号名，读文件时是文件路径',
+    arguments         TEXT COMMENT '模型给工具填的参数原文',
+    result_summary    VARCHAR(1000) COMMENT '工具返回值摘要',
+    prompt_tokens     INT           NOT NULL DEFAULT 0,
+    completion_tokens INT           NOT NULL DEFAULT 0,
+    cached_tokens     INT           NOT NULL DEFAULT 0,
+    elapsed_ms        BIGINT        NOT NULL DEFAULT 0,
+    PRIMARY KEY (id),
+    KEY idx_task_id (task_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4 COMMENT 'agent 式评审的执行轨迹';
+
 CREATE TABLE IF NOT EXISTS review_issue
 (
     id         BIGINT AUTO_INCREMENT,

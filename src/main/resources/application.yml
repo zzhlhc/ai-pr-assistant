@@ -5,8 +5,17 @@ spring:
   application:
     name: ai-pr-assistant
 
+  # 激活 local profile，Spring Boot 会额外加载 application-local.yml
+  # 该文件存放密钥，已被 .gitignore 忽略。部署时用环境变量覆盖：SPRING_PROFILES_ACTIVE=prod
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
   ai:
     openai:
+      # 连接级超时。⚠️ Spring AI 2.0.1 里请求级的 options.timeout 默认写死 60s，
+      # 会盖过这里的配置，真正生效的是代码里的 CodeReviewer.REQUEST_TIMEOUT。
+      # 这里的值留着当兜底。
+      timeout: 300s
       # 三个环境变量不设置也能启动，但调用模型会失败。
       # 推荐本地用 application-local.yml 覆盖，该文件已在 .gitignore 中忽略。
       api-key: ${LLM_API_KEY:sk-placeholder}
@@ -16,6 +25,9 @@ spring:
           model: ${LLM_MODEL:deepseek-chat}
           # 代码评审要的是稳定和准确，不是发散
           temperature: 0.2
+        # ⚠️ 这个值只绑定到 OpenAiChatProperties，Spring AI 2.0.1 的 toOptions() 没有把它
+        # 写进 OpenAiChatOptions，所以对请求超时不起作用，仅用于启动日志自检。
+        timeout: 300s
 
 gitee:
   token: ${GITEE_TOKEN:}

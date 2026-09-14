@@ -1,5 +1,6 @@
 package com.zhouziheng.review;
 
+import com.zhouziheng.review.context.CodeContext;
 import com.zhouziheng.review.diff.FileDiff;
 import com.zhouziheng.review.model.ReviewReport;
 import com.zhouziheng.review.model.ReviewResult;
@@ -71,8 +72,9 @@ public class CodeReviewer {
         this.pricing = pricing;
     }
 
-    public ReviewResult review(String repo, String commitSha, String commitMessage, List<FileDiff> files) {
-        String userPrompt = promptBuilder.buildUserPrompt(repo, commitSha, commitMessage, files);
+    public ReviewResult review(String repo, String commitSha, String commitMessage,
+                               List<FileDiff> files, List<CodeContext> contexts) {
+        String userPrompt = promptBuilder.buildUserPrompt(repo, commitSha, commitMessage, files, contexts);
 
         String startTime = LocalDateTime.now().format(TIME_FORMAT);
         long startMillis = System.currentTimeMillis();
@@ -83,6 +85,9 @@ public class CodeReviewer {
                 ReviewPromptBuilder.SYSTEM_PROMPT.length(), userPrompt.length(),
                 ReviewPromptBuilder.SYSTEM_PROMPT.length() + userPrompt.length());
         log.info("user 内容分段字符数 | {}", describeFileSections(files));
+        log.info("召回上下文段字符数={} | 占 user 的比例={}%",
+                promptBuilder.contextSectionLength(contexts),
+                userPrompt.isEmpty() ? 0 : promptBuilder.contextSectionLength(contexts) * 100 / userPrompt.length());
 
         try {
             // 用 responseEntity 而不是 entity：既能拿到解析好的对象，又能拿到 ChatResponse，

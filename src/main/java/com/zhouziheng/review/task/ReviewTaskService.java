@@ -1,5 +1,6 @@
 package com.zhouziheng.review.task;
 
+import com.zhouziheng.review.ReviewOptions;
 import com.zhouziheng.review.ReviewService;
 import com.zhouziheng.review.model.ReviewResult;
 import com.zhouziheng.review.prompt.ReviewPromptBuilder;
@@ -43,31 +44,40 @@ public class ReviewTaskService {
         this.executor = executor;
     }
 
+    public ReviewTask submit(String repo, String commitSha) {
+        return submit(repo, commitSha, ReviewOptions.DEFAULT);
+    }
+
     /**
      * 提交一次评审。
      * <p>
-     * 同一个 commit + 同一版提示词评审过就直接把老结果还回去 ——
-     * 评审一次要几十秒、八分钱，重复提交同一个 commit 是最常见的浪费场景
-     * （改完代码手抖点两次、分享链接被同事点一遍都会触发）。
+     * 同一个 commit + 同一版提示词 + 同一组召回参数，评审过就直接把老结果还回去 ——
+     * 评审一次要几十秒、有真实的调用成本，重复提交同一个 commit 是最常见的浪费场景
+     * （连点两次、分享链接被同事打开都会触发）。
+     * <p>
+     * 召回参数必须进缓存 key：否则调完参数重新提交会命中上一轮的结果，
+     * 看到的还是旧参数的效果。
      * <p>
      * 已知限制：两个人同一瞬间提交同一个 commit，会双双查不到缓存然后各跑一次。
      * 这里不修，是因为修它要么加唯一索引 + 抢锁，要么引 Redis 分布式锁，
-     * 代价都比"极小概率多花八分钱"高。真要治，正确的位置是入库前的幂等键。
+     * 代价都比"极小概率多花一次调用"高。真要治，正确的位置是入库前的幂等键。
      */
-    public ReviewTask submit(String repo, String commitSha) {
-        ReviewTask cached = repository.findCached(repo, commitSha, ReviewPromptBuilder.PROMPT_VERSION);
+    public ReviewTask submit(String repo, String commitSha, ReviewOptions options) {
+        String signature = options.signature();
+        ReviewTask cached = repository.findCached(repo, commitSha,
+                ReviewPromptBuilder.PROMPT_VERSION, signature);
         if (cached != null) {
             cacheHits.incrementAndGet();
-            log.info("命中缓存 | repo={} | commit={} | 提示词={} | 复用任务={} | 原耗时={}ms",
-                    repo, commitSha, cached.promptVersion(), cached.id(), cached.elapsedMillis());
+            log.info("命中缓存 | repo={} | commit={} | 提示词={} | 召回参数={} | 复用任务={} | 原耗时={}ms",
+                    repo, commitSha, cached.promptVersion(), signature, cached.id(), cached.elapsedMillis());
             return cached;
         }
 
         ReviewTask task = ReviewTask.pending(UUID.randomUUID().toString().substring(0, 8),
                 repo, commitSha, ReviewPromptBuilder.PROMPT_VERSION);
-        repository.insert(task);
+        repository.insert(task, signature);
         store.save(task);
-        executor.execute(() -> run(task));
+        executor.execute(() -> run(task, options));
         return task;
     }
 
@@ -94,16 +104,18 @@ public class ReviewTaskService {
         return store.stream(id);
     }
 
-    private void run(ReviewTask task) {
+    private void run(ReviewTask task, ReviewOptions options) {
         long startMillis = System.currentTimeMillis();
         try {
-            ReviewResult result = reviewService.review(task.repo(), task.commitSha(),
+            ReviewResult result = reviewService.review(task.repo(), task.commitSha(), options,
                     stage -> persist(latest(task).running(stage)));
-            ReviewTask finished = latest(task).success(result.report(), result.usage(), result.elapsedMillis());
+            ReviewTask finished = latest(task).success(result.report(), result.usage(),
+                    result.elapsedMillis(), result.contexts());
             repository.replaceIssues(finished.id(), finished.report().issues());
+            repository.replaceContexts(finished.id(), finished.contexts());
             persist(finished);
-            log.info("任务完成 | id={} | repo={} | commit={} | 耗时={}ms",
-                    task.id(), task.repo(), task.commitSha(), result.elapsedMillis());
+            log.info("任务完成 | id={} | repo={} | commit={} | 召回文件={} | 耗时={}ms",
+                    task.id(), task.repo(), task.commitSha(), finished.contexts().size(), result.elapsedMillis());
         } catch (Exception e) {
             persist(latest(task).failed(e.getMessage(), System.currentTimeMillis() - startMillis));
             log.error("任务失败 | id={} | repo={} | commit={}", task.id(), task.repo(), task.commitSha(), e);

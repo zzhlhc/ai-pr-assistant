@@ -3,7 +3,7 @@ package com.zhouziheng.review.task;
 import java.math.BigDecimal;
 
 /**
- * 成本账。面试官最爱问的「一次评审多少钱、一共花了多少钱」，答案就从这里出。
+ * 成本账：单次评审用了多少 token、花了多少钱，累计下来是多少。
  * <p>
  * 前 6 个字段是一次 SQL 聚合出来的；cacheHits 不一样 ——
  * 命中缓存不会产生新任务行（直接复用历史结果），库里根本没有痕迹，

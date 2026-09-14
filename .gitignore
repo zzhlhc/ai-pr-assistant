@@ -42,6 +42,8 @@ src/main/resources/application-local.yml
 docs/
 .idea/
 
+docs/notes/
+
 ### 前端 ###
 web/node_modules/
 web/dist/

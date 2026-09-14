@@ -1,5 +1,6 @@
 package com.zhouziheng.review.task;
 
+import com.zhouziheng.review.context.RecalledFile;
 import com.zhouziheng.review.model.ReviewIssue;
 import com.zhouziheng.review.model.ReviewReport;
 import com.zhouziheng.review.model.Severity;
@@ -16,11 +17,11 @@ import java.util.List;
  * <p>
  * 用的是 Spring 自带的 JdbcClient，没有引入 MyBatis-Plus ——
  * 它目前只有 spring-boot3-starter，为了一个 ORM 把主框架降到 3.x 不划算；
- * 两张表、几条固定 SQL 也用不上 ORM 的动态能力。
+ * 几张表、几条固定 SQL 也用不上 ORM 的动态能力。
  * <p>
  * 这里顺带承担了"评审结果缓存"的职责：评审是 repo + commitSha 的纯函数，
  * 天然幂等，不是热数据（一个 commit 通常只评一次），所以没必要再引一个 Redis，
- * 直接拿 review_task 表当缓存，用 prompt_version 控制失效。
+ * 直接拿 review_task 表当缓存，用 prompt_version + rag_signature 控制失效。
  */
 @Repository
 public class ReviewTaskRepository {
@@ -31,15 +32,18 @@ public class ReviewTaskRepository {
         this.jdbc = jdbc;
     }
 
-    public void insert(ReviewTask task) {
+    public void insert(ReviewTask task, String ragSignature) {
         jdbc.sql("""
-                        INSERT INTO review_task (id, repo, commit_sha, prompt_version, status, stage, issue_count, created_at)
-                        VALUES (:id, :repo, :commitSha, :promptVersion, :status, :stage, 0, :createdAt)
+                        INSERT INTO review_task (id, repo, commit_sha, prompt_version, rag_signature,
+                                                 status, stage, issue_count, created_at)
+                        VALUES (:id, :repo, :commitSha, :promptVersion, :ragSignature,
+                                :status, :stage, 0, :createdAt)
                         """)
                 .param("id", task.id())
                 .param("repo", task.repo())
                 .param("commitSha", task.commitSha())
                 .param("promptVersion", task.promptVersion())
+                .param("ragSignature", ragSignature)
                 .param("status", task.status().name())
                 .param("stage", task.stage())
                 .param("createdAt", task.createdAt())
@@ -104,6 +108,22 @@ public class ReviewTaskRepository {
         }
     }
 
+    /** 这次评审召回了哪些相关代码，明细同样单独一张表 */
+    public void replaceContexts(String taskId, List<RecalledFile> contexts) {
+        jdbc.sql("DELETE FROM review_task_context WHERE task_id = :taskId").param("taskId", taskId).update();
+        for (RecalledFile context : contexts) {
+            jdbc.sql("""
+                            INSERT INTO review_task_context (task_id, path, skeleton_chars, raw_chars)
+                            VALUES (:taskId, :path, :chars, :rawChars)
+                            """)
+                    .param("taskId", taskId)
+                    .param("path", context.path())
+                    .param("chars", context.chars())
+                    .param("rawChars", context.rawChars())
+                    .update();
+        }
+    }
+
     public List<TaskSummary> list() {
         return jdbc.sql("""
                         SELECT id, repo, commit_sha, status, stage, summary, issue_count, cost, elapsed_ms,
@@ -128,18 +148,19 @@ public class ReviewTaskRepository {
     }
 
     /**
-     * 缓存查询：同一个 commit + 同一版提示词，只要成功评过一次就直接复用。
+     * 缓存查询：同一个 commit + 同一版提示词 + 同一组召回参数，只要成功评过一次就直接复用。
      * <p>
      * 注意这里只认 SUCCESS。FAILED / PENDING / RUNNING 都不算数 ——
      * 失败的结果可能是网络抖动或限流造成的，缓存下来等于把一次偶发故障永久固化。
      */
-    public ReviewTask findCached(String repo, String commitSha, String promptVersion) {
+    public ReviewTask findCached(String repo, String commitSha, String promptVersion, String ragSignature) {
         ReviewTask task = jdbc.sql("""
                         SELECT *
                           FROM review_task
                          WHERE repo = :repo
                            AND commit_sha = :commitSha
                            AND prompt_version = :promptVersion
+                           AND rag_signature = :ragSignature
                            AND status = 'SUCCESS'
                          ORDER BY finished_at DESC
                          LIMIT 1
@@ -147,15 +168,16 @@ public class ReviewTaskRepository {
                 .param("repo", repo)
                 .param("commitSha", commitSha)
                 .param("promptVersion", promptVersion)
+                .param("ragSignature", ragSignature)
                 .query(this::mapTask)
                 .optional()
                 .orElse(null);
-        return task == null ? null : withIssues(task);
+        return task == null ? null : withDetails(task);
     }
 
     /**
-     * 详情：任务本身 + 问题明细，两条 SQL。
-     * 刻意不 JOIN —— 明细是多行，JOIN 出来还要在内存里按 task 分组去重，反而更绕。
+     * 详情：任务本身 + 问题明细 + 召回明细，三条 SQL。
+     * 刻意不 JOIN —— 两张明细都是多行，JOIN 出来还要在内存里按 task 分组去重，反而更绕。
      */
     public ReviewTask findById(String id) {
         ReviewTask task = jdbc.sql("SELECT * FROM review_task WHERE id = :id")
@@ -163,13 +185,12 @@ public class ReviewTaskRepository {
                 .query(this::mapTask)
                 .optional()
                 .orElse(null);
-        return task == null ? null : withIssues(task);
+        return task == null ? null : withDetails(task);
     }
 
     /**
      * 成本账。两条不带 JOIN 的聚合查询：
      * 任务表算钱和耗时，问题表单独 count。
-     * 关联查询在这里没有收益（明细是多行，JOIN 出来还得去重），分两条反而更快也更好读。
      */
     public ReviewStats stats() {
         long issueCount = jdbc.sql("SELECT COUNT(*) FROM review_issue").query(Long.class).single();
@@ -193,8 +214,9 @@ public class ReviewTaskRepository {
                 .single();
     }
 
-    private ReviewTask withIssues(ReviewTask task) {
-        return task.withReport(new ReviewReport(task.report().summary(), findIssues(task.id())));
+    private ReviewTask withDetails(ReviewTask task) {
+        return task.withReport(new ReviewReport(task.report().summary(), findIssues(task.id())))
+                .withContexts(findContexts(task.id()));
     }
 
     private List<ReviewIssue> findIssues(String taskId) {
@@ -216,6 +238,21 @@ public class ReviewTaskRepository {
                 .list();
     }
 
+    private List<RecalledFile> findContexts(String taskId) {
+        return jdbc.sql("""
+                        SELECT path, skeleton_chars, raw_chars
+                          FROM review_task_context
+                         WHERE task_id = :taskId
+                         ORDER BY id
+                        """)
+                .param("taskId", taskId)
+                .query((rs, rowNum) -> new RecalledFile(
+                        rs.getString("path"),
+                        rs.getInt("skeleton_chars"),
+                        rs.getInt("raw_chars")))
+                .list();
+    }
+
     private ReviewTask mapTask(ResultSet rs, int rowNum) throws SQLException {
         Integer promptTokens = rs.getObject("prompt_tokens", Integer.class);
         TokenUsage usage = promptTokens == null ? null : new TokenUsage(
@@ -234,6 +271,7 @@ public class ReviewTaskRepository {
                 rs.getString("stage"),
                 // 明细单独查，先放个只有 summary 的空壳
                 new ReviewReport(rs.getString("summary"), List.of()),
+                List.of(),
                 rs.getString("error"),
                 usage,
                 rs.getObject("elapsed_ms", Long.class),

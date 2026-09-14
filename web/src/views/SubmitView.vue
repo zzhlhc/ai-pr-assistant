@@ -7,7 +7,7 @@ import { errorMessage } from '../utils/error'
 
 const router = useRouter()
 
-// 预填一个能跑的 commit，方便直接点「开始评审」演示
+// 预填一个能跑的 commit，方便直接点「开始评审」试用
 const form = reactive({
   repo: 'dumbbell5kg/coopwire',
   commitSha: '6f438275ba06710d71c708ed3e5d5eb7472bdbe8',

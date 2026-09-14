@@ -1,9 +1,11 @@
 package com.zhouziheng.review.task;
 
+import com.zhouziheng.review.context.RecalledFile;
 import com.zhouziheng.review.model.ReviewReport;
 import com.zhouziheng.review.model.TokenUsage;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 评审任务的状态快照。
@@ -13,7 +15,10 @@ import java.time.LocalDateTime;
  * 前端不用自己维护增量。
  * <p>
  * promptVersion 是缓存的一部分：同一个 commit、同一版提示词，评审结果才允许复用。
- * 改了提示词却不升版本号，你会在"提示词迭代"的对比实验里拿到一份自己骗自己的数据。
+ * 改了提示词却不升版本号，会拿到一份被旧结果污染的对比数据。
+ * <p>
+ * contexts 记录这次评审召回了哪些相关文件 —— 报告里每一条结论都建立在这些上下文之上，
+ * 不记下来就没法解释"模型凭什么这么说"。
  */
 public record ReviewTask(String id,
                          String repo,
@@ -22,6 +27,7 @@ public record ReviewTask(String id,
                          TaskStatus status,
                          String stage,
                          ReviewReport report,
+                         List<RecalledFile> contexts,
                          String error,
                          TokenUsage usage,
                          Long elapsedMillis,
@@ -31,7 +37,7 @@ public record ReviewTask(String id,
 
     public static ReviewTask pending(String id, String repo, String commitSha, String promptVersion) {
         return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.PENDING, "排队中",
-                null, null, null, null, LocalDateTime.now(), null, null);
+                null, List.of(), null, null, null, LocalDateTime.now(), null, null);
     }
 
     /**
@@ -40,26 +46,33 @@ public record ReviewTask(String id,
      */
     public ReviewTask running(String stage) {
         return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.RUNNING, stage,
-                null, null, null, null, createdAt,
+                null, contexts, null, null, null, createdAt,
                 startedAt == null ? LocalDateTime.now() : startedAt, null);
     }
 
-    public ReviewTask success(ReviewReport report, TokenUsage usage, long elapsedMillis) {
+    public ReviewTask success(ReviewReport report, TokenUsage usage, long elapsedMillis,
+                              List<RecalledFile> contexts) {
         return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.SUCCESS, "已完成",
-                report, null, usage, elapsedMillis,
+                report, contexts == null ? List.of() : contexts, null, usage, elapsedMillis,
                 createdAt, startedAt, LocalDateTime.now());
     }
 
     public ReviewTask failed(String error, long elapsedMillis) {
         return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.FAILED, "已失败",
-                null, error, null, elapsedMillis,
+                null, contexts, error, null, elapsedMillis,
                 createdAt, startedAt, LocalDateTime.now());
     }
 
     /** 从库里读出来只带了 summary，明细要单独查一次再补进来 */
     public ReviewTask withReport(ReviewReport report) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, status, stage, report, error, usage,
-                elapsedMillis, createdAt, startedAt, finishedAt);
+        return new ReviewTask(id, repo, commitSha, promptVersion, status, stage, report, contexts,
+                error, usage, elapsedMillis, createdAt, startedAt, finishedAt);
+    }
+
+    /** 同理，召回明细也是单独查一次再补进来 */
+    public ReviewTask withContexts(List<RecalledFile> contexts) {
+        return new ReviewTask(id, repo, commitSha, promptVersion, status, stage, report, contexts,
+                error, usage, elapsedMillis, createdAt, startedAt, finishedAt);
     }
 
     public int issueCount() {

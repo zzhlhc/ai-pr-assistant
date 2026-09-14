@@ -10,6 +10,28 @@ spring:
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
 
+  mvc:
+    async:
+      # SSE 长连接的超时时间。Tomcat 默认 30 秒，而一次评审要 60~90 秒，
+      # 不改这里，连接会在任务跑完之前被容器掐断，前端永远等不到结果。
+      request-timeout: 10m
+
+  datasource:
+    # 账号密码放 application-local.yml（已被 gitignore），部署时用环境变量覆盖
+    url: jdbc:mysql://localhost:3306/ai_pr_assistant?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 5
+      # 数据库没起来时快速失败，而不是让请求挂 30 秒
+      connection-timeout: 3000
+
+  sql:
+    init:
+      # 默认是 embedded，只对 H2 这类内嵌库生效，MySQL 必须显式打开。
+      # schema.sql 全部写成 IF NOT EXISTS，所以每次启动重复执行也安全。
+      mode: always
+
   ai:
     openai:
       # 连接级超时。⚠️ Spring AI 2.0.1 里请求级的 options.timeout 默认写死 60s，

@@ -19,7 +19,7 @@ public class ReviewController {
 
     @PostMapping
     public ReviewReport review(@RequestBody ReviewRequest request) {
-        return reviewService.review(request.repo(), request.commitSha());
+        return reviewService.review(request.repo(), request.commitSha()).report();
     }
 
     public record ReviewRequest(String repo, String commitSha) {

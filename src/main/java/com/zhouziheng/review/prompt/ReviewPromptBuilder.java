@@ -10,6 +10,13 @@ import java.util.List;
 @Component
 public class ReviewPromptBuilder {
 
+    /**
+     * 提示词版本号。改动下面任何一段提示词都要把它 +1。
+     * 评审结果会被当成缓存复用，如果提示词变了还复用旧结果，
+     * 你会在"提示词迭代"的对比实验里得到一份自己骗自己的数据。
+     */
+    public static final String PROMPT_VERSION = "v1";
+
     public static final String SYSTEM_PROMPT = """
             你是一位有 10 年经验的 Java 后端技术专家，负责评审团队的代码提交。
 

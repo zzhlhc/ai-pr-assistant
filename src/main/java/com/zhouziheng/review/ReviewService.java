@@ -7,11 +7,13 @@ import com.zhouziheng.review.diff.DiffParser;
 import com.zhouziheng.review.diff.FileDiff;
 import com.zhouziheng.review.model.ReviewIssue;
 import com.zhouziheng.review.model.ReviewReport;
+import com.zhouziheng.review.model.ReviewResult;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 @Service
@@ -30,13 +32,26 @@ public class ReviewService {
         this.codeReviewer = codeReviewer;
     }
 
-    public ReviewReport review(String repo, String commitSha) {
+    public ReviewResult review(String repo, String commitSha) {
+        return review(repo, commitSha, stage -> {
+        });
+    }
+
+    /**
+     * @param onStage 阶段回调。一次评审要跑一分钟以上，把"当前在干什么"暴露出去，
+     *                前端的进度提示才不会从头到尾卡在同一句话上。
+     */
+    public ReviewResult review(String repo, String commitSha, Consumer<String> onStage) {
         String[] parts = splitRepo(repo);
+        onStage.accept("拉取 commit 与 diff");
         GiteeCommit commit = giteeClient.getCommit(parts[0], parts[1], commitSha);
 
         List<FileDiff> diffs = toFileDiffs(commit);
-        ReviewReport report = codeReviewer.review(repo, commitSha, commit.commit().message(), diffs);
-        return verify(report, diffs);
+        onStage.accept("模型评审中（" + diffs.size() + " 个文件）");
+        ReviewResult result = codeReviewer.review(repo, commitSha, commit.commit().message(), diffs);
+
+        onStage.accept("校验行号并整理报告");
+        return new ReviewResult(verify(result.report(), diffs), result.usage(), result.elapsedMillis());
     }
 
     /**

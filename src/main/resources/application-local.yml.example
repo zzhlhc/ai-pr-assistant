@@ -1,5 +1,10 @@
 # 复制为 application-local.yml 后填入自己的 Key（该文件已被 .gitignore 忽略）
 spring:
+  datasource:
+    # 本机 MySQL 的账号密码
+    username: root
+    password: 你的MySQL密码
+
   ai:
     openai:
       # DeepSeek:  https://platform.deepseek.com       base-url: https://api.deepseek.com

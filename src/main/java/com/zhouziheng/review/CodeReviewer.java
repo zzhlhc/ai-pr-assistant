@@ -2,6 +2,8 @@ package com.zhouziheng.review;
 
 import com.zhouziheng.review.diff.FileDiff;
 import com.zhouziheng.review.model.ReviewReport;
+import com.zhouziheng.review.model.ReviewResult;
+import com.zhouziheng.review.model.TokenUsage;
 import com.zhouziheng.review.prompt.ReviewPromptBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,7 +71,7 @@ public class CodeReviewer {
         this.pricing = pricing;
     }
 
-    public ReviewReport review(String repo, String commitSha, String commitMessage, List<FileDiff> files) {
+    public ReviewResult review(String repo, String commitSha, String commitMessage, List<FileDiff> files) {
         String userPrompt = promptBuilder.buildUserPrompt(repo, commitSha, commitMessage, files);
 
         String startTime = LocalDateTime.now().format(TIME_FORMAT);
@@ -95,6 +97,7 @@ public class CodeReviewer {
             long costMillis = System.currentTimeMillis() - startMillis;
             String endTime = LocalDateTime.now().format(TIME_FORMAT);
             int issueCount = report.issues() == null ? 0 : report.issues().size();
+            TokenUsage usage = toTokenUsage(response.getResponse().getMetadata().getUsage());
 
             log.info("""
                             \n==================== DeepSeek 返回的响应内容 开始 ====================
@@ -103,9 +106,9 @@ public class CodeReviewer {
                     report);
             log.info("模型调用成功 | 开始请求时间={} | 结束时间={} | 耗时={}ms（{}秒） | 问题数={}",
                     startTime, endTime, costMillis, costMillis / 1000.0, issueCount);
-            log.info("token 消耗 | {}", describeUsage(response.getResponse().getMetadata().getUsage()));
+            log.info("token 消耗 | {}", describeUsage(usage));
 
-            return report;
+            return new ReviewResult(report, usage, costMillis);
         } catch (Exception e) {
             long costMillis = System.currentTimeMillis() - startMillis;
             log.error("模型调用失败 | 开始请求时间={} | 结束时间={} | 耗时={}ms（{}秒） | 异常={}",
@@ -116,12 +119,13 @@ public class CodeReviewer {
     }
 
     /**
-     * 把用量换算成人话。
+     * 把 Spring AI 的用量换算成我们自己的模型。
      * 缓存命中的输入 token 单价更低，所以要把它从 promptTokens 里拆出来单独计价。
+     * 模型没回传用量时返回 null —— 不编数字。
      */
-    private String describeUsage(Usage usage) {
+    private TokenUsage toTokenUsage(Usage usage) {
         if (usage.getPromptTokens() == null) {
-            return "模型未返回 token 用量";
+            return null;
         }
 
         int promptTokens = usage.getPromptTokens();
@@ -130,11 +134,19 @@ public class CodeReviewer {
 
         BigDecimal cost = priceOf(promptTokens - cachedTokens, pricing.inputPricePerMillion())
                 .add(priceOf(cachedTokens, pricing.cachedInputPricePerMillion()))
-                .add(priceOf(completionTokens, pricing.outputPricePerMillion()));
+                .add(priceOf(completionTokens, pricing.outputPricePerMillion()))
+                .setScale(4, RoundingMode.HALF_UP);
 
+        return new TokenUsage(promptTokens, completionTokens, usage.getTotalTokens(), cachedTokens, cost);
+    }
+
+    private String describeUsage(TokenUsage usage) {
+        if (usage == null) {
+            return "模型未返回 token 用量";
+        }
         return "prompt=%d（其中缓存命中 %d） | completion=%d | total=%d | 预估费用≈%s 元".formatted(
-                promptTokens, cachedTokens, completionTokens, usage.getTotalTokens(),
-                cost.setScale(4, RoundingMode.HALF_UP).toPlainString());
+                usage.promptTokens(), usage.cachedTokens(), usage.completionTokens(),
+                usage.totalTokens(), usage.cost().toPlainString());
     }
 
     private BigDecimal priceOf(long tokens, BigDecimal pricePerMillion) {

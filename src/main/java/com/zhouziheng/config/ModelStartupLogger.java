@@ -41,12 +41,12 @@ public class ModelStartupLogger implements ApplicationRunner {
                         │ apiKey        = {}
                         └───────────────────────────────────────────────""",
                 chatProperties.getModel(),
-                chatProperties.getBaseUrl(),
+                commonProperties.getBaseUrl(),
                 CodeReviewer.REQUEST_TIMEOUT,
                 chatProperties.getTimeout(),
                 commonProperties.getTimeout(),
                 chatProperties.getMaxRetries(),
-                mask(chatProperties.getApiKey()));
+                mask(commonProperties.getApiKey()));
     }
 
     private String mask(String apiKey) {

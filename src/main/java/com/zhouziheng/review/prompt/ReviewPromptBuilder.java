@@ -44,20 +44,34 @@ public class ReviewPromptBuilder {
         prompt.append("`+` 是新增行，`-` 是删除行，空格开头是上下文行。\n\n");
 
         for (FileDiff file : files) {
-            prompt.append("### 文件：").append(file.path())
-                    .append("（").append(file.status())
-                    .append("，+").append(file.additions())
-                    .append(" -").append(file.deletions()).append("）\n");
-            prompt.append("```diff\n");
-            for (DiffHunk hunk : file.hunks()) {
-                prompt.append("@@ 新文件第 ").append(hunk.newStart()).append(" 行起 @@\n");
-                for (DiffLine line : hunk.lines()) {
-                    prompt.append(formatLine(line));
-                }
-            }
-            prompt.append("```\n\n");
+            appendFile(prompt, file);
         }
         return prompt.toString();
+    }
+
+    /**
+     * 单个文件那一段的字符数。只用于日志统计，让"token 花在哪个文件上"一目了然，
+     * 又不用把几万字的 diff 全打到日志里。
+     */
+    public int fileSectionLength(FileDiff file) {
+        StringBuilder section = new StringBuilder();
+        appendFile(section, file);
+        return section.length();
+    }
+
+    private void appendFile(StringBuilder prompt, FileDiff file) {
+        prompt.append("### 文件：").append(file.path())
+                .append("（").append(file.status())
+                .append("，+").append(file.additions())
+                .append(" -").append(file.deletions()).append("）\n");
+        prompt.append("```diff\n");
+        for (DiffHunk hunk : file.hunks()) {
+            prompt.append("@@ 新文件第 ").append(hunk.newStart()).append(" 行起 @@\n");
+            for (DiffLine line : hunk.lines()) {
+                prompt.append(formatLine(line));
+            }
+        }
+        prompt.append("```\n\n");
     }
 
     private String formatLine(DiffLine line) {

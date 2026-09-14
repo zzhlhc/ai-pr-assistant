@@ -33,6 +33,14 @@ gitee:
   token: ${GITEE_TOKEN:}
   base-url: https://gitee.com/api/v5
 
+review:
+  # 模型计费单价（元 / 百万 token）。⚠️ 下面只是示例值，务必按你自己账号的账单改，
+  # 改完启动日志里的"预估费用"才是准的。
+  pricing:
+    input-price-per-million: 2.0        # 输入，缓存未命中
+    cached-input-price-per-million: 0.04 # 输入，命中上下文缓存
+    output-price-per-million: 8.0       # 输出
+
 management:
   endpoints:
     web:

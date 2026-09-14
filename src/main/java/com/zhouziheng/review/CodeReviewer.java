@@ -6,16 +6,22 @@ import com.zhouziheng.review.prompt.ReviewPromptBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 把 diff 交给大模型，拿回结构化的评审结果。
@@ -52,12 +58,15 @@ public class CodeReviewer {
 
     private final ChatClient chatClient;
     private final ReviewPromptBuilder promptBuilder;
+    private final ReviewPricingProperties pricing;
 
-    public CodeReviewer(ChatClient.Builder chatClientBuilder, ReviewPromptBuilder promptBuilder) {
+    public CodeReviewer(ChatClient.Builder chatClientBuilder, ReviewPromptBuilder promptBuilder,
+                        ReviewPricingProperties pricing) {
         this.chatClient = chatClientBuilder
                 .defaultOptions(OpenAiChatOptions.builder().timeout(REQUEST_TIMEOUT))
                 .build();
         this.promptBuilder = promptBuilder;
+        this.pricing = pricing;
     }
 
     public ReviewReport review(String repo, String commitSha, String commitMessage, List<FileDiff> files) {
@@ -66,27 +75,23 @@ public class CodeReviewer {
         String startTime = LocalDateTime.now().format(TIME_FORMAT);
         long startMillis = System.currentTimeMillis();
 
-        // 完整请求内容。想关掉就把它改成 debug 或调高 logging.level.com.zhouziheng
-        log.info("""
-                        \n==================== 发给 DeepSeek 的请求内容 开始 ====================
-                        【开始请求时间】{}
-                        【仓库】{}   【commit】{}   【文件数】{}
-                        【system】共 {} 字符
-                        {}
-                        【user】共 {} 字符
-                        {}
-                        ==================== 发给 DeepSeek 的请求内容 结束 ====================""",
-                startTime, repo, commitSha, files.size(),
-                ReviewPromptBuilder.SYSTEM_PROMPT.length(), ReviewPromptBuilder.SYSTEM_PROMPT,
-                userPrompt.length(), userPrompt);
+        log.info("开始请求 | 时间={} | 仓库={} | commit={} | 文件数={}",
+                startTime, repo, commitSha, files.size());
+        log.info("请求字符数 | system={} | user={} | 合计={}",
+                ReviewPromptBuilder.SYSTEM_PROMPT.length(), userPrompt.length(),
+                ReviewPromptBuilder.SYSTEM_PROMPT.length() + userPrompt.length());
+        log.info("user 内容分段字符数 | {}", describeFileSections(files));
 
         try {
-            ReviewReport report = chatClient.prompt()
+            // 用 responseEntity 而不是 entity：既能拿到解析好的对象，又能拿到 ChatResponse，
+            // 后者里面的 metadata.usage 才是 token 用量唯一的来源。
+            ResponseEntity<ChatResponse, ReviewReport> response = chatClient.prompt()
                     .system(ReviewPromptBuilder.SYSTEM_PROMPT)
                     .user(userPrompt)
                     .call()
-                    .entity(CONVERTER);
+                    .responseEntity(CONVERTER);
 
+            ReviewReport report = response.getEntity();
             long costMillis = System.currentTimeMillis() - startMillis;
             String endTime = LocalDateTime.now().format(TIME_FORMAT);
             int issueCount = report.issues() == null ? 0 : report.issues().size();
@@ -98,6 +103,7 @@ public class CodeReviewer {
                     report);
             log.info("模型调用成功 | 开始请求时间={} | 结束时间={} | 耗时={}ms（{}秒） | 问题数={}",
                     startTime, endTime, costMillis, costMillis / 1000.0, issueCount);
+            log.info("token 消耗 | {}", describeUsage(response.getResponse().getMetadata().getUsage()));
 
             return report;
         } catch (Exception e) {
@@ -107,5 +113,41 @@ public class CodeReviewer {
                     costMillis, costMillis / 1000.0, e.toString(), e);
             throw e;
         }
+    }
+
+    /**
+     * 把用量换算成人话。
+     * 缓存命中的输入 token 单价更低，所以要把它从 promptTokens 里拆出来单独计价。
+     */
+    private String describeUsage(Usage usage) {
+        if (usage.getPromptTokens() == null) {
+            return "模型未返回 token 用量";
+        }
+
+        int promptTokens = usage.getPromptTokens();
+        int completionTokens = usage.getCompletionTokens();
+        long cachedTokens = usage.getCacheReadInputTokens() == null ? 0 : usage.getCacheReadInputTokens();
+
+        BigDecimal cost = priceOf(promptTokens - cachedTokens, pricing.inputPricePerMillion())
+                .add(priceOf(cachedTokens, pricing.cachedInputPricePerMillion()))
+                .add(priceOf(completionTokens, pricing.outputPricePerMillion()));
+
+        return "prompt=%d（其中缓存命中 %d） | completion=%d | total=%d | 预估费用≈%s 元".formatted(
+                promptTokens, cachedTokens, completionTokens, usage.getTotalTokens(),
+                cost.setScale(4, RoundingMode.HALF_UP).toPlainString());
+    }
+
+    private BigDecimal priceOf(long tokens, BigDecimal pricePerMillion) {
+        return pricePerMillion.multiply(BigDecimal.valueOf(tokens))
+                .divide(BigDecimal.valueOf(1_000_000), 6, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 每个文件在提示词里占多少字符。token 花在哪个文件上一眼就能看出来。
+     */
+    private String describeFileSections(List<FileDiff> files) {
+        return files.stream()
+                .map(file -> file.path() + "=" + promptBuilder.fileSectionLength(file))
+                .collect(Collectors.joining("，"));
     }
 }

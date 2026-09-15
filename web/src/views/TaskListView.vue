@@ -48,13 +48,11 @@ function schedule() {
   }
 }
 
-/** 一次评审的平均成本，用来估算缓存替我们省了多少钱 */
+/** 一次评审的平均成本 */
 const avgCost = computed(() => {
   if (!stats.value || !stats.value.successCount) return 0
   return stats.value.totalCost / stats.value.successCount
 })
-
-const savedCost = computed(() => avgCost.value * (stats.value?.cacheHits ?? 0))
 
 onUnmounted(() => window.clearTimeout(timer))
 
@@ -88,11 +86,6 @@ refresh()
         <div class="label">发现问题</div>
         <div class="value">{{ stats.issueCount }}</div>
         <div class="sub">全部任务合计</div>
-      </div>
-      <div class="stat highlight">
-        <div class="label">缓存命中</div>
-        <div class="value">{{ stats.cacheHits }}</div>
-        <div class="sub">约省下 {{ formatCost(savedCost) }}</div>
       </div>
     </div>
 
@@ -155,11 +148,6 @@ refresh()
   border: 1px solid #ebeef5;
   border-radius: 6px;
   padding: 14px 16px;
-}
-
-.stat.highlight {
-  border-color: #b3e19d;
-  background: #f0f9eb;
 }
 
 .label {

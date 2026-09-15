@@ -100,7 +100,7 @@ export interface ReviewTask {
   id: string
   repo: string
   commitSha: string
-  /** 提示词版本，也是缓存的失效开关：同一 commit + 同一版本才会复用历史结果 */
+  /** 这条结果是用哪版提示词跑出来的 */
   promptVersion: string
   status: TaskStatus
   stage: string | null
@@ -140,5 +140,4 @@ export interface ReviewStats {
   totalTokens: number
   totalCost: number
   avgElapsedMillis: number | null
-  cacheHits: number
 }

@@ -68,10 +68,6 @@ async function submit() {
   submitting.value = true
   try {
     const task = await createTask(form.repo.trim(), form.commitSha.trim(), { ...options })
-    if (task.status === 'SUCCESS') {
-      // 新任务一定是 PENDING 起步，返回时就已经是终态，只可能是命中了缓存
-      ElMessage.success('这个 commit 用同一组参数评过了，直接复用历史结果')
-    }
     // 提交是毫秒级返回的，真正的评审在后台跑，跳到详情页看实时进度
     await router.push(`/tasks/${task.id}`)
   } catch (error) {

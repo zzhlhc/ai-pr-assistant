@@ -3,7 +3,6 @@ package com.zhouziheng.controller;
 import com.zhouziheng.review.ReviewOptions;
 import com.zhouziheng.review.task.ReviewTask;
 import com.zhouziheng.review.task.ReviewTaskService;
-import com.zhouziheng.review.task.TaskStatus;
 import com.zhouziheng.review.task.TaskSummary;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -30,19 +29,14 @@ public class ReviewTaskController {
     }
 
     /**
-     * 提交任务。
+     * 提交任务：返回 202（任务"已接受"，在后台跑），前端跳到详情页看 SSE 进度。
      * <p>
-     * 未命中缓存：返回 202（任务"已接受"，在后台跑），前端跳到详情页看 SSE 进度。
-     * 命中缓存：返回 200 + 一个已经做完的任务，请求进来就已经是终态了，没有"等待"这回事。
-     * 两种情况的差别用状态码 + X-Cache 头明说，curl 和 DevTools 里一眼能看出命没命中，
+     * 每次提交都真的跑一遍，没有"命中历史结果直接返回终态"的分支，所以状态码恒为 202。
      */
     @PostMapping
     public ResponseEntity<ReviewTask> submit(@RequestBody ReviewRequest request) {
         ReviewTask task = taskService.submit(request.repo(), request.commitSha(), request.optionsOrDefault());
-        boolean hit = task.status() == TaskStatus.SUCCESS;
-        return ResponseEntity.status(hit ? HttpStatus.OK : HttpStatus.ACCEPTED)
-                .header("X-Cache", hit ? "HIT" : "MISS")
-                .body(task);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(task);
     }
 
     @GetMapping

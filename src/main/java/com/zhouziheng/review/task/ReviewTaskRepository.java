@@ -20,9 +20,8 @@ import java.util.List;
  * 它目前只有 spring-boot3-starter，为了一个 ORM 把主框架降到 3.x 不划算；
  * 几张表、几条固定 SQL 也用不上 ORM 的动态能力。
  * <p>
- * 这里顺带承担了"评审结果缓存"的职责：评审是 repo + commitSha 的纯函数，
- * 天然幂等，不是热数据（一个 commit 通常只评一次），所以没必要再引一个 Redis，
- * 直接拿 review_task 表当缓存，用 prompt_version + rag_signature 控制失效。
+ * prompt_version / rag_signature 只作为"这次评审用的哪版提示词、哪组召回参数"的记录留在行上，
+ * 不参与任何短路逻辑 —— 每条记录都是一次真实跑出来的评审。
  */
 @Repository
 public class ReviewTaskRepository {
@@ -179,34 +178,6 @@ public class ReviewTaskRepository {
     }
 
     /**
-     * 缓存查询：同一个 commit + 同一版提示词 + 同一组召回参数，只要成功评过一次就直接复用。
-     * <p>
-     * 注意这里只认 SUCCESS。FAILED / PENDING / RUNNING 都不算数 ——
-     * 失败的结果可能是网络抖动或限流造成的，缓存下来等于把一次偶发故障永久固化。
-     */
-    public ReviewTask findCached(String repo, String commitSha, String promptVersion, String ragSignature) {
-        ReviewTask task = jdbc.sql("""
-                        SELECT *
-                          FROM review_task
-                         WHERE repo = :repo
-                           AND commit_sha = :commitSha
-                           AND prompt_version = :promptVersion
-                           AND rag_signature = :ragSignature
-                           AND status = 'SUCCESS'
-                         ORDER BY finished_at DESC
-                         LIMIT 1
-                        """)
-                .param("repo", repo)
-                .param("commitSha", commitSha)
-                .param("promptVersion", promptVersion)
-                .param("ragSignature", ragSignature)
-                .query(this::mapTask)
-                .optional()
-                .orElse(null);
-        return task == null ? null : withDetails(task);
-    }
-
-    /**
      * 详情：任务本身 + 问题明细 + 召回明细，三条 SQL。
      * 刻意不 JOIN —— 两张明细都是多行，JOIN 出来还要在内存里按 task 分组去重，反而更绕。
      */
@@ -240,8 +211,7 @@ public class ReviewTaskRepository {
                         issueCount,
                         rs.getLong("total_tokens"),
                         rs.getBigDecimal("total_cost"),
-                        rs.getObject("avg_elapsed_ms", Long.class),
-                        0))
+                        rs.getObject("avg_elapsed_ms", Long.class)))
                 .single();
     }
 

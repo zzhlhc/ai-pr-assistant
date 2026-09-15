@@ -15,7 +15,6 @@ import reactor.core.publisher.Flux;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 评审任务的编排层：提交任务、丢进线程池、把状态变化写进 store（进而推给 SSE）。
@@ -32,12 +31,6 @@ public class ReviewTaskService {
     private final ReviewService reviewService;
     private final Executor executor;
 
-    /**
-     * 命中缓存的次数。缓存命中不会落库（直接复用历史结果），
-     * 库里查不到痕迹，所以只能在进程内记一笔。
-     */
-    private final AtomicLong cacheHits = new AtomicLong();
-
     public ReviewTaskService(ReviewTaskStore store, ReviewTaskRepository repository, ReviewService reviewService,
                              @Qualifier("reviewExecutor") Executor executor) {
         this.store = store;
@@ -53,31 +46,19 @@ public class ReviewTaskService {
     /**
      * 提交一次评审。
      * <p>
-     * 同一个 commit + 同一版提示词 + 同一组召回参数，评审过就直接把老结果还回去 ——
-     * 评审一次要几十秒、有真实的调用成本，重复提交同一个 commit 是最常见的浪费场景
-     * （连点两次、分享链接被同事打开都会触发）。
+     * 每次提交都真的评一遍，不做"同一个 commit + 同一组参数就复用历史结果"的短路：
+     * 重复提交也重新调用模型，宁可多花一次钱。
      * <p>
-     * 召回参数必须进缓存 key：否则调完参数重新提交会命中上一轮的结果，
-     * 看到的还是旧参数的效果。
-     * <p>
-     * 已知限制：两个人同一瞬间提交同一个 commit，会双双查不到缓存然后各跑一次。
-     * 这里不修，是因为修它要么加唯一索引 + 抢锁，要么引 Redis 分布式锁，
-     * 代价都比"极小概率多花一次调用"高。真要治，正确的位置是入库前的幂等键。
+     * 代价是连点两次、或同事打开同一个链接会各花一次钱；
+     * 换来的是"提交一次 = 一次真实评审"，看到的一定是当下模型 + 当下提示词的结论，
+     * 不会因为复用旧结果而让人误以为改了提示词/参数已经生效。
      */
     public ReviewTask submit(String repo, String commitSha, ReviewOptions options) {
         String signature = options.signature();
-        // 两种策略的提示词是两套独立的东西，版本号各记各的 ——
-        // 否则改坏了 agent 的提示词，预塞式的缓存也会跟着一起失效。
+        // 两种策略的提示词是两套独立的东西，版本号各记各的
         String promptVersion = options.isAgent()
                 ? AgentReviewer.PROMPT_VERSION
                 : ReviewPromptBuilder.PROMPT_VERSION;
-        ReviewTask cached = repository.findCached(repo, commitSha, promptVersion, signature);
-        if (cached != null) {
-            cacheHits.incrementAndGet();
-            log.info("命中缓存 | repo={} | commit={} | 提示词={} | 召回参数={} | 复用任务={} | 原耗时={}ms",
-                    repo, commitSha, cached.promptVersion(), signature, cached.id(), cached.elapsedMillis());
-            return cached;
-        }
 
         ReviewTask task = ReviewTask.pending(UUID.randomUUID().toString().substring(0, 8),
                 repo, commitSha, promptVersion);
@@ -95,9 +76,9 @@ public class ReviewTaskService {
         return repository.list();
     }
 
-    /** 成本账：库里聚合出来的部分 + 内存里的缓存命中次数 */
+    /** 成本账：全部来自库里的聚合 */
     public ReviewStats stats() {
-        return repository.stats().withCacheHits(cacheHits.get());
+        return repository.stats();
     }
 
     public Flux<ReviewTask> stream(String id) {

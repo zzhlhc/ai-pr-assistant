@@ -37,6 +37,17 @@ public class AgentToolkit {
     /** 单次工具结果的字符上限，防止超长行把预算打穿 */
     private static final int MAX_RESULT_CHARS = 16_000;
 
+    /**
+     * 每次调用都必须填的一句中文理由，直接显示在评审轨迹里给用户看。
+     * <p>
+     * 为什么不用模型自己的思考过程：thinking 模式下那部分在 reasoning_content 里，
+     * 是英文、而且几千字符起步，既没法约束也没法读。做成必填参数才是可控的 ——
+     * 模型必须给它、而且长度和语言都由这句话规定。
+     */
+    private static final String REASON_DESC = "用中文一句话说明你为什么调用它，40 字以内，"
+            + "例如「确认 Api.getRequestBody 会不会返回 null」。"
+            + "这句话会原样显示在评审轨迹里给用户看，所以不要写推理过程、不要贴代码、不要用英文。";
+
     private final GiteeClient gitee;
     private final RepoFileIndex index;
     private final String owner;
@@ -63,17 +74,19 @@ public class AgentToolkit {
                         Map.of(
                                 "type", "object",
                                 "properties", Map.of(
+                                        "reason", Map.of("type", "string", "description", REASON_DESC),
                                         "name", Map.of("type", "string", "description", "简单类名，例如 ApiParameterGroup")),
-                                "required", List.of("name"))),
+                                "required", List.of("name", "reason"))),
                 AgentToolSpec.of("read_file",
                         "读取仓库中某个文件的指定行范围，每行开头是行号。先用 find_type 拿到路径，再用这个工具读它的内容。",
                         Map.of(
                                 "type", "object",
                                 "properties", Map.of(
+                                        "reason", Map.of("type", "string", "description", REASON_DESC),
                                         "path", Map.of("type", "string", "description", "仓库内的相对路径"),
                                         "startLine", Map.of("type", "integer", "description", "起始行，从 1 开始"),
                                         "endLine", Map.of("type", "integer", "description", "结束行，含该行")),
-                                "required", List.of("path"))));
+                                "required", List.of("path", "reason"))));
     }
 
     /**

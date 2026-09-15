@@ -52,6 +52,35 @@ export function compressionPercent(chars: number, rawChars: number): number {
   return rawChars === 0 ? 0 : Math.round((chars * 100) / rawChars)
 }
 
+/**
+ * 从 read_file 的参数里取出模型请求的行范围，例如 "1-160 行"。
+ * 模型自己拼的 JSON 不保证合法，解析失败就返回空串；
+ * 它只给 path 不给行号时后端会从第 1 行读默认长度，这里不猜具体范围，同样返回空串。
+ */
+export function lineRange(argumentsJson: string | null | undefined): string {
+  if (!argumentsJson) {
+    return ''
+  }
+  let startLine: unknown
+  let endLine: unknown
+  try {
+    const args = JSON.parse(argumentsJson) as { startLine?: unknown; endLine?: unknown }
+    startLine = args.startLine
+    endLine = args.endLine
+  } catch {
+    return ''
+  }
+  const start = typeof startLine === 'number' ? startLine : null
+  const end = typeof endLine === 'number' ? endLine : null
+  if (start === null && end === null) {
+    return ''
+  }
+  if (start !== null && end !== null) {
+    return `${start}-${end} 行`
+  }
+  return start === null ? `前 ${end} 行` : `${start} 行起`
+}
+
 const TOOL_LABEL: Record<string, string> = {
   find_type: '查找类',
   read_file: '读取文件',

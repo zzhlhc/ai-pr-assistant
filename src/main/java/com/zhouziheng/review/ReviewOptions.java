@@ -25,6 +25,12 @@ public record ReviewOptions(String strategy, Integer maxFiles, Integer totalBudg
     public static final int DEFAULT_TOTAL_BUDGET = 15_000;
     public static final int DEFAULT_MAX_ROUNDS = 8;
 
+    /**
+     * 不设轮数上限：完全不给兜底，看模型能不能自己收敛。
+     * 只用于验证收敛能力的实验 —— 它不收尾就会一直跑、一直烧钱，正常评审不要用。
+     */
+    public static final int MAX_ROUNDS_UNLIMITED = -1;
+
     public static final ReviewOptions DEFAULT = new ReviewOptions(null, null, null, null);
 
     public static ReviewOptions of(Integer maxFiles, Integer totalBudget) {
@@ -53,6 +59,9 @@ public record ReviewOptions(String strategy, Integer maxFiles, Integer totalBudg
     }
 
     public int maxRoundsOrDefault() {
+        if (maxRounds != null && maxRounds == MAX_ROUNDS_UNLIMITED) {
+            return MAX_ROUNDS_UNLIMITED;
+        }
         return maxRounds == null || maxRounds <= 0 ? DEFAULT_MAX_ROUNDS : maxRounds;
     }
 
@@ -65,7 +74,8 @@ public record ReviewOptions(String strategy, Integer maxFiles, Integer totalBudg
      */
     public String signature() {
         if (isAgent()) {
-            return "agent-r" + maxRoundsOrDefault();
+            int rounds = maxRoundsOrDefault();
+            return rounds == MAX_ROUNDS_UNLIMITED ? "agent-rinf" : "agent-r" + rounds;
         }
         return "f" + maxFilesOrDefault() + "b" + totalBudgetOrDefault();
     }

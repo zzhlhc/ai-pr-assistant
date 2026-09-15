@@ -3,7 +3,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Loading } from '@element-plus/icons-vue'
 import { getTask, subscribeTask } from '../api/task'
-import type { ReviewTask, Severity } from '../types/task'
+import type { AgentStep, ReviewTask, Severity } from '../types/task'
 import {
   SEVERITY_ORDER,
   SEVERITY_TAG,
@@ -15,6 +15,7 @@ import {
   formatNumber,
   formatSeconds,
   formatTime,
+  lineRange,
   shortSha,
   sortBySeverity,
   toolLabel,
@@ -53,6 +54,136 @@ const readFiles = computed(() => {
   }
   return seen
 })
+
+/**
+ * 模型给这次调用填的理由，来自工具参数里的 reason（必填）。
+ * 这是轨迹里"它为什么要看这个文件"的正文 —— 一句话、中文，比整段思考过程好读得多。
+ */
+function stepReason(step: AgentStep): string {
+  if (!step.arguments) {
+    return ''
+  }
+  try {
+    const { reason } = JSON.parse(step.arguments) as { reason?: unknown }
+    return typeof reason === 'string' ? reason.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 老数据的兜底：v2 之前的轨迹没有 reason，只有模型整段的思考过程
+ * （thinking 模式下是英文、几千字符）。最后一轮的 content 是报告本身，
+ * 看起来像 JSON 的直接不显示，免得几 k token 的报告铺在时间轴上。
+ */
+function roundThought(step: AgentStep): string {
+  const text = step.thought?.trim()
+  return !text || text.startsWith('{') ? '' : text
+}
+
+/** 展开看全文的轮次。理由默认只留两行，太长的话点一下看全 */
+const expandedRounds = ref<number[]>([])
+
+function toggleThought(round: number) {
+  expandedRounds.value = expandedRounds.value.includes(round)
+    ? expandedRounds.value.filter((item) => item !== round)
+    : [...expandedRounds.value, round]
+}
+
+/**
+ * 时间轴每行只保留"找什么类 / 读什么文件"。
+ * 两种工具的 target 都是路径（find_type 返回的是解析出来的文件路径），所以统一取最后一段：
+ * 查类显示类名、不带 .java，读文件显示文件名加行范围 ——
+ * 大文件会被模型分成几段读，只显示文件名的话看起来像把同一个文件读了两次。
+ */
+function stepLabel(step: AgentStep): string {
+  if (!step.target) {
+    return ''
+  }
+  const name = fileName(step.target)
+  if (step.toolName !== 'read_file') {
+    return name.replace(/\.java$/, '')
+  }
+  const range = lineRange(step.arguments)
+  return range ? `${name}（${range}）` : name
+}
+
+interface RoundAction {
+  toolName: string | null
+  targets: string[]
+}
+
+interface RoundGroup {
+  round: number
+  /** toolName 为 null 表示这一轮没调工具、直接给出了结论 */
+  final: boolean
+  /** 这一轮每个工具调用各自填的中文理由 */
+  reasons: string[]
+  /** 没有 reason 的老数据，退回整段思考过程 */
+  thought: string
+  actions: RoundAction[]
+}
+
+/**
+ * 整条轨迹里真正被读过的文件。
+ * 查找类只是"为了读它"的中间步骤 —— 目标最终被读了，就不再单独显示这一条：
+ * 否则时间轴上会一直是"查找类 Api"和"读取文件 Api.java"并列出现，看着像说了两遍。
+ */
+const readPaths = computed(() => new Set(
+  steps.value
+    .filter((step) => step.toolName === 'read_file' && step.target)
+    .map((step) => step.target),
+))
+
+function mergedIntoRead(step: AgentStep): boolean {
+  return step.toolName === 'find_type' && !!step.target && readPaths.value.has(step.target)
+}
+
+/**
+ * 按轮聚合：模型一轮里可以并行发好几个工具调用（同一轮会有多条 step），
+ * 合并成一行更贴近"这一轮它干了什么"的读法。
+ * 同一轮里同一种工具的目标用顿号连起来；不同工具（比如同时查了类又读了文件）各占一段。
+ * 被合并掉的查找如果让某一轮空掉了，那一轮直接不占行 —— 它只做了内部定位，没读任何代码。
+ */
+const rounds = computed<RoundGroup[]>(() => {
+  const groups: RoundGroup[] = []
+  for (const step of steps.value) {
+    if (mergedIntoRead(step)) {
+      continue
+    }
+    let group = groups[groups.length - 1]
+    if (!group || group.round !== step.round) {
+      group = {
+        round: step.round,
+        final: !step.toolName,
+        reasons: [],
+        thought: roundThought(step),
+        actions: [],
+      }
+      groups.push(group)
+    }
+    const reason = stepReason(step)
+    if (reason && !group.reasons.includes(reason)) {
+      group.reasons.push(reason)
+    }
+    const label = stepLabel(step)
+    let action = group.actions.find((item) => item.toolName === step.toolName)
+    if (!action) {
+      action = { toolName: step.toolName, targets: [] }
+      group.actions.push(action)
+    }
+    // 同一轮里读了完全相同的行范围才去重；同一个文件的不同行段要各显示各的
+    if (label && !action.targets.includes(label)) {
+      action.targets.push(label)
+    }
+  }
+  return groups.filter((group) => group.final || group.actions.length > 0)
+})
+
+/** 优先显示模型填的理由；老数据没有 reason 才退回整段思考过程 */
+function roundNote(group: RoundGroup): string {
+  return group.reasons.length ? group.reasons.join('；') : group.thought
+}
 
 const contexts = computed(() => task.value?.contexts ?? [])
 const recallChars = computed(() => contexts.value.reduce((sum, file) => sum + file.chars, 0))
@@ -131,6 +262,58 @@ onUnmounted(() => unsubscribe?.())
         <span class="hint">大模型评审通常要 40~90 秒，页面会自动更新</span>
       </div>
 
+      <!-- 轨迹是后端逐步累积推过来的，所以运行中就能看到已经跑完的每一步，不用等结束 -->
+      <template v-if="steps.length">
+        <div class="section-title">Agent 执行轨迹（模型自己决定读哪些代码）</div>
+
+        <el-descriptions v-if="!running" :column="4" border size="small" class="stats">
+          <el-descriptions-item label="总轮数">{{ agentRounds }}</el-descriptions-item>
+          <el-descriptions-item label="工具调用">{{ toolCallCount }} 次</el-descriptions-item>
+          <el-descriptions-item label="读过文件">{{ readFiles.length }} 个</el-descriptions-item>
+          <el-descriptions-item label="整链路耗时">
+            {{ formatSeconds(task.elapsedMillis) }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-timeline class="timeline">
+          <el-timeline-item
+            v-for="group in rounds"
+            :key="group.round"
+            :type="group.final ? 'success' : 'primary'"
+            :hollow="group.final"
+            placement="top"
+          >
+            <div class="step-head">
+              <span class="step-round">第 {{ group.round }} 轮</span>
+              <template v-for="action in group.actions" :key="action.toolName ?? 'final'">
+                <el-tag :type="action.toolName ? 'warning' : 'success'" size="small">
+                  {{ toolLabel(action.toolName) }}
+                </el-tag>
+                <span v-if="action.targets.length" class="step-target">
+                  {{ action.targets.join('、') }}
+                </span>
+              </template>
+            </div>
+            <p
+              v-if="roundNote(group)"
+              class="step-thought"
+              :class="{ expanded: expandedRounds.includes(group.round) }"
+              title="点击展开或收起"
+              @click="toggleThought(group.round)"
+            >
+              {{ roundNote(group) }}
+            </p>
+          </el-timeline-item>
+        </el-timeline>
+
+        <p v-if="!running" class="hint">
+          每一轮都是模型自己的决定：先看 diff 里不认识的名字，再决定去查哪个类、读哪个文件。
+          查找类只是读取的前置步骤，所以只在"没读到代码"时才单独显示。
+          每轮下面那段灰字是模型当场填的理由（工具参数里的 reason），点一下可以展开。
+          轨迹里没出现的文件，说明它判断不需要看 —— 上下文不是我们事先备好的，而是它在循环里用出来的。
+        </p>
+      </template>
+
       <template v-if="task.status !== 'FAILED' && !running">
         <el-descriptions :column="5" border size="small" class="stats">
           <el-descriptions-item label="问题数">{{ issues.length }}</el-descriptions-item>
@@ -190,50 +373,6 @@ onUnmounted(() => unsubscribe?.())
           </el-table-column>
           <el-table-column prop="issue" label="问题" min-width="320" />
         </el-table>
-
-        <template v-if="steps.length">
-          <div class="section-title">Agent 执行轨迹（模型自己决定读哪些代码）</div>
-
-          <el-descriptions :column="4" border size="small" class="stats">
-            <el-descriptions-item label="总轮数">{{ agentRounds }}</el-descriptions-item>
-            <el-descriptions-item label="工具调用">{{ toolCallCount }} 次</el-descriptions-item>
-            <el-descriptions-item label="读过文件">{{ readFiles.length }} 个</el-descriptions-item>
-            <el-descriptions-item label="整链路耗时">
-              {{ formatSeconds(task.elapsedMillis) }}
-            </el-descriptions-item>
-          </el-descriptions>
-
-          <el-timeline class="timeline">
-            <el-timeline-item
-              v-for="(step, index) in steps"
-              :key="index"
-              :type="step.toolName ? 'primary' : 'success'"
-              :hollow="!step.toolName"
-              placement="top"
-            >
-              <div class="step-head">
-                <span class="step-round">第 {{ step.round }} 轮</span>
-                <el-tag :type="step.toolName ? 'warning' : 'success'" size="small">
-                  {{ toolLabel(step.toolName) }}
-                </el-tag>
-                <span class="step-meta">
-                  in {{ formatNumber(step.promptTokens) }} / out
-                  {{ formatNumber(step.completionTokens) }} · {{ formatSeconds(step.elapsedMillis) }}
-                </span>
-              </div>
-              <div v-if="step.target" class="step-target">{{ step.target }}</div>
-              <p v-if="step.thought" class="step-thought">{{ step.thought }}</p>
-              <pre v-if="step.resultSummary" class="step-result">{{ step.resultSummary }}</pre>
-            </el-timeline-item>
-          </el-timeline>
-
-          <p class="hint">
-            每一轮都是模型自己的决定：它先看到 diff 里不认识的名字，再决定去查哪个类、读哪个文件的哪几行。
-            轨迹里没出现的文件，说明它判断不需要看。这正是 agent 式和预塞式最大的区别 ——
-            上下文不是我们事先准备好的，而是它在循环里用出来的。
-            in / out 是这一轮的输入输出 token（多轮之间重复的历史会命中缓存，所以实际计费比 in 显示的少）。
-          </p>
-        </template>
 
         <template v-if="contexts.length">
           <div class="section-title">本次 RAG 召回（模型评审时参考的相关代码）</div>
@@ -370,40 +509,31 @@ onUnmounted(() => unsubscribe?.())
   font-size: 13px;
 }
 
-.step-meta {
-  color: #a8abb2;
-  font-size: 12px;
-  margin-left: auto;
-}
-
 .step-target {
   color: #606266;
   font-size: 12px;
   font-family: SFMono-Regular, Consolas, monospace;
-  margin-top: 4px;
   word-break: break-all;
 }
 
+/* 模型这一轮的解释。默认只留两行，点一下看全文 */
 .step-thought {
-  color: #303133;
-  font-size: 13px;
-  line-height: 1.7;
   margin: 6px 0 0;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.7;
+  cursor: pointer;
   white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.step-result {
-  background: #f5f7fa;
-  border-radius: 4px;
-  padding: 8px 10px;
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  max-height: 160px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: #606266;
+.step-thought.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
 }
 
 .hint {

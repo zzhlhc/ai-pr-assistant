@@ -37,7 +37,7 @@ export interface ReviewOptions {
   maxFiles?: number | null
   /** 预塞式：召回内容的字符总预算 */
   totalBudget?: number | null
-  /** agent 式：最多允许模型来回几轮 */
+  /** agent 式：最多允许模型来回几轮。传 -1 表示不设上限（只用于收敛实验，会一直烧钱） */
   maxRounds?: number | null
 }
 

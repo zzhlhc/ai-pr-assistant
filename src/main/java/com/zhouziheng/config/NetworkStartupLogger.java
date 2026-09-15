@@ -22,7 +22,7 @@ import java.util.TreeMap;
  * 所以环境变量 HTTPS_PROXY 不会生效，-Dhttps.proxyHost 会，且对 gitee、deepseek
  * 这类"不需要代理"的域名同样生效。
  */
-@Component
+//@Component
 public class NetworkStartupLogger implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(NetworkStartupLogger.class);

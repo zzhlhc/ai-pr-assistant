@@ -23,7 +23,6 @@ import org.springframework.util.StringUtils;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 @Service
@@ -53,26 +52,25 @@ public class ReviewService {
     }
 
     public ReviewResult review(String repo, String commitSha) {
-        return review(repo, commitSha, ReviewOptions.DEFAULT, stage -> {
-        });
+        return review(repo, commitSha, ReviewOptions.DEFAULT, ReviewProgress.none());
     }
 
     /**
      * @param options 召回参数（最多召回几个文件、字符预算）
-     * @param onStage 阶段回调。一次评审要跑一分钟以上，把"当前在干什么"暴露出去，
-     *                前端的进度提示才不会从头到尾卡在同一句话上。
+     * @param progress 进度回调。一次评审要跑一分钟以上，把"当前在干什么"暴露出去，
+     *                 前端的进度提示才不会从头到尾卡在同一句话上；agent 式还会逐步上报执行轨迹。
      */
-    public ReviewResult review(String repo, String commitSha, ReviewOptions options, Consumer<String> onStage) {
+    public ReviewResult review(String repo, String commitSha, ReviewOptions options, ReviewProgress progress) {
         String[] parts = splitRepo(repo);
-        onStage.accept("拉取 commit 与 diff");
+        progress.stage("拉取 commit 与 diff");
         GiteeCommit commit = giteeClient.getCommit(parts[0], parts[1], commitSha);
         List<FileDiff> diffs = toFileDiffs(commit);
 
         // 两条链路拿到的 diff 完全一样，唯一的差异是"上下文从哪来"。
         // 这样同一个 commit 换策略跑出来的两份报告才有可比性。
         return options.isAgent()
-                ? agentReview(parts, repo, commitSha, commit, diffs, options, onStage)
-                : preloadReview(parts, repo, commitSha, commit, diffs, options, onStage);
+                ? agentReview(parts, repo, commitSha, commit, diffs, options, progress)
+                : preloadReview(parts, repo, commitSha, commit, diffs, options, progress);
     }
 
     /**
@@ -80,13 +78,13 @@ public class ReviewService {
      * 耗时记的是整条链路（含建索引和每一轮往返），因为它就是要拿来和预塞式的单次调用对比的。
      */
     private ReviewResult agentReview(String[] parts, String repo, String commitSha, GiteeCommit commit,
-                                     List<FileDiff> diffs, ReviewOptions options, Consumer<String> onStage) {
+                                     List<FileDiff> diffs, ReviewOptions options, ReviewProgress progress) {
         long startMillis = System.currentTimeMillis();
         AgentReviewer.Outcome outcome = agentReviewer.review(parts[0], parts[1], commitSha,
-                commit.commit().message(), diffs, options, onStage);
+                commit.commit().message(), diffs, options, progress);
         long elapsedMillis = System.currentTimeMillis() - startMillis;
 
-        onStage.accept("校验行号并整理报告");
+        progress.stage("校验行号并整理报告");
         return new ReviewResult(verify(outcome.report(), diffs), outcome.usage(), elapsedMillis,
                 List.of(), outcome.trace());
     }
@@ -96,15 +94,15 @@ public class ReviewService {
      * 召回失败只影响评审质量、不影响评审能否进行，所以那一段是静默退化的。
      */
     private ReviewResult preloadReview(String[] parts, String repo, String commitSha, GiteeCommit commit,
-                                       List<FileDiff> diffs, ReviewOptions options, Consumer<String> onStage) {
-        onStage.accept("召回相关代码定义");
+                                       List<FileDiff> diffs, ReviewOptions options, ReviewProgress progress) {
+        progress.stage("召回相关代码定义");
         List<CodeContext> contexts = contextRecaller.recall(parts[0], parts[1], commitSha,
                 resolveSymbols(parts[0], parts[1], commitSha, diffs), options);
 
-        onStage.accept("模型评审中（" + diffs.size() + " 个文件）");
+        progress.stage("模型评审中（" + diffs.size() + " 个文件）");
         ReviewResult result = codeReviewer.review(repo, commitSha, commit.commit().message(), diffs, contexts);
 
-        onStage.accept("校验行号并整理报告");
+        progress.stage("校验行号并整理报告");
         return new ReviewResult(verify(result.report(), diffs), result.usage(), result.elapsedMillis(),
                 contexts.stream().map(RecalledFile::of).toList());
     }

@@ -48,10 +48,14 @@ public record ReviewTask(String id,
     /**
      * 推进阶段。startedAt 只在第一次进入 RUNNING 时记，
      * 否则后面的阶段更新会把真实开始时间冲掉。
+     * <p>
+     * steps 传的是"到这里为止已经跑完的步骤"（不是增量）。
+     * agent 式在跑的过程中每完成一步就推一次，页面才能实时累积出完整轨迹 ——
+     * 只靠 stage 那一个字符串的话，后一步会把前一步顶掉，过程就没了。
      */
-    public ReviewTask running(String stage) {
+    public ReviewTask running(String stage, List<AgentStep> steps) {
         return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.RUNNING, stage,
-                null, contexts, steps, null, null, null, createdAt,
+                null, contexts, steps == null ? List.of() : steps, null, null, null, createdAt,
                 startedAt == null ? LocalDateTime.now() : startedAt, null);
     }
 

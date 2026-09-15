@@ -2,6 +2,7 @@ package com.zhouziheng.review.agent;
 
 import com.zhouziheng.gitee.GiteeClient;
 import com.zhouziheng.review.ReviewOptions;
+import com.zhouziheng.review.ReviewProgress;
 import com.zhouziheng.review.TokenPricing;
 import com.zhouziheng.review.agent.dto.AgentChatResponse;
 import com.zhouziheng.review.agent.dto.AgentMessage;
@@ -21,7 +22,6 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -44,14 +44,36 @@ public class AgentReviewer {
     /**
      * 提示词版本号。改动下面任何一段提示词都要把它 +1，
      * 理由和 {@link ReviewPromptBuilder#PROMPT_VERSION} 一样：评审结果会被当缓存复用。
+     * <p>
+     * v2：补上收尾自查表（原来只有"能支撑结论就停下来"这种主观说法，
+     * 实测 6 次评审全部跑到轮数上限，自然收敛 0 次）。
+     * v3：要求每次调用工具时用中文写一句话说明理由（轨迹里要直接显示给用户看）。
      */
-    public static final String PROMPT_VERSION = "agent-v1";
+    public static final String PROMPT_VERSION = "agent-v3";
+
+    /**
+     * 终答的解析器，配置和预塞式那条链路保持完全一致 ——
+     * 两条链路的输出格式一样，解析规则就该一样，否则对比出来的差异里会混进解析差异。
+     * <p>
+     * 刻意声明在 {@link #SYSTEM_PROMPT} 之前：system 提示词末尾要拼它的 schema，
+     * 而静态字段按声明顺序初始化，写反了会拿到 null。
+     */
+    private static final BeanOutputConverter<ReviewReport> CONVERTER = new BeanOutputConverter<>(
+            ReviewReport.class,
+            JsonMapper.builder()
+                    .disable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                    .build());
 
     public static final String SYSTEM_PROMPT = """
             你是一位有 10 年经验的 Java 后端技术专家，负责评审团队的代码提交。
 
             你可以调用工具去查看仓库里的代码。当你要判断"某个字段会不会是 null""某个方法或成员是否存在"时，
             必须先用 find_type 找到类、再用 read_file 把它的定义读出来，不要凭类名猜测它的实现。
+
+            调用工具时必须在 reason 参数里用中文写一句话说明你为什么要看它（40 字以内），
+            例如"确认 Api.getRequestBody 会不会返回 null"。
+            这句话会原样显示在评审轨迹里给用户看，不要写推理过程、不要贴代码、不要用英文。
 
             评审纪律：
             1. 只指出真实存在的问题，宁缺毋滥。改动没有问题时就返回空的 issues 列表。
@@ -60,7 +82,7 @@ public class AgentReviewer {
             3. evidence 必须是该行代码原文，原样复制，不要改写、不要加解释。
             4. 不要评论纯格式化、纯重命名、依赖升级、自动生成的文件这类无实质影响的改动。
             5. 不要评审你读到的上下文代码，它们只是背景资料，评审对象只有 diff。
-            6. 读文件是为了确认判断，不是为了看得更全。能支撑结论了就停下来输出报告，不要漫无目的地翻。
+            6. 读文件是为了确认判断，不是为了看得更全 —— 什么时候算评完，见下面的「收尾判断」。
             7. 只输出一个 JSON 对象，JSON 前后不要加任何说明文字，也不要输出第二个 JSON。
 
             重点关注：空指针与边界条件、并发与线程安全、事务与数据一致性、SQL 与索引、
@@ -74,21 +96,26 @@ public class AgentReviewer {
 
             category 用简短中文，例如：空指针、并发、事务、SQL、异常处理、安全、性能、可读性。
             summary 用中文，200 字以内，先给总体结论，再给风险提示。
-            """;
+
+            收尾判断（每轮结束时自查，三项都满足就立刻输出报告，不要再调工具）：
+            1. diff 里每个文件的每个 hunk 都已经看过一遍；
+            2. diff 里所有你原本不认识的符号，要么已经 find_type / read_file 确认过，要么已经记进"待确认"；
+            3. 当前没有"再读一个文件就能多确认一条问题"的待办。
+
+            自觉达标之后不要继续读文件：
+            - 已经能判断的，不要为了交叉验证再读第二个文件；
+            - 读到的上下文代码不是评审对象，不要顺着它继续往下挖；
+            - 本轮没有发现新的可疑点，说明已经收敛，直接输出报告。
+
+            信息不足时不要继续读：把"未能确认 XXX"写进 summary 里一句话就够了，
+            不影响这份报告的完整性；确认不了的点也不要凭猜测定性成问题。
+
+            交付方式：某一轮里不再调用工具、直接输出下面的 JSON，本次评审就正常结束 ——
+            这是设计好的结束方式，不是被中断。JSON 前后不要有别的文字。
+            """ + CONVERTER.getFormat();
 
     /** 落进执行轨迹的工具返回摘要长度。轨迹是给人看的，完整返回值没必要留着占地方 */
     private static final int SNIPPET_CHARS = 240;
-
-    /**
-     * 终答的解析器，配置和预塞式那条链路保持完全一致 ——
-     * 两条链路的输出格式一样，解析规则就该一样，否则对比出来的差异里会混进解析差异。
-     */
-    private static final BeanOutputConverter<ReviewReport> CONVERTER = new BeanOutputConverter<>(
-            ReviewReport.class,
-            JsonMapper.builder()
-                    .disable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                    .build());
 
     private final GiteeClient gitee;
     private final RepoFileIndexer indexer;
@@ -109,33 +136,38 @@ public class AgentReviewer {
     }
 
     /**
-     * @param onStage 阶段回调。agent 一轮要十几秒，用户需要知道"现在是模型在想，还是在读文件"。
+     * @param progress 进度回调。agent 一轮要十几秒，用户需要知道"现在是模型在想，还是在读文件"，
+     *                 所以除了阶段文案，每跑完一步还要把这一步本身报出去（{@code progress.step}）——
+     *                 页面靠它把完整轨迹实时累积起来，而不是只看到最新那句话。
      */
     public Outcome review(String owner, String repo, String sha, String commitMessage,
-                          List<FileDiff> files, ReviewOptions options, Consumer<String> onStage) {
+                          List<FileDiff> files, ReviewOptions options, ReviewProgress progress) {
 
-        onStage.accept("构建仓库符号索引");
+        progress.stage("构建仓库符号索引");
         RepoFileIndex index = indexer.indexOf(owner, repo, sha);
         AgentToolkit toolkit = new AgentToolkit(gitee, index, owner, repo, sha);
 
         // 和预塞式唯一的输入差异：上下文传空。模型想知道什么，自己去查。
         //
-        // 末尾这段 JSON Schema 是必须的：预塞式那条链路里 responseEntity(converter) 会
-        // 自动把 schema 附到提示词后面，而这里手写了协议，就得自己附。
-        // 少了它模型会自己编字段名（实测把 issue 写成了 description），
-        // 解析出来除了 summary 全是 null，最后一条问题都存不下来。
+        // 报告 schema 拼在 SYSTEM_PROMPT 末尾，不拼在这里：
+        // 这份 diff 动辄上万 token，schema 跟在它后面就成了"数据段里的格式说明"，
+        // 而它其实是协议 —— 该和评审纪律待在一起，而不是混在数据里。
+        // schema 本身不能省：少了它会自己编字段名（实测把 issue 写成过 description），
+        // 解析出来除了 summary 全是 null。
         List<AgentMessage> messages = new ArrayList<>();
         messages.add(AgentMessage.system(SYSTEM_PROMPT));
         messages.add(AgentMessage.user(
-                promptBuilder.buildUserPrompt(repo, sha, commitMessage, files, List.of())
-                        + CONVERTER.getFormat()));
+                promptBuilder.buildUserPrompt(repo, sha, commitMessage, files, List.of())));
 
         List<AgentStep> steps = new ArrayList<>();
         Usage total = new Usage();
         int maxRounds = options.maxRoundsOrDefault();
+        // 不设上限时循环只靠模型自己收尾（唯一的出口是"这一轮不调工具"），
+        // 跑不停就一直跑 —— 这是实验配置，代价是真实的调用费用。
+        boolean unlimited = maxRounds == ReviewOptions.MAX_ROUNDS_UNLIMITED;
 
-        for (int round = 1; round <= maxRounds; round++) {
-            onStage.accept("第 " + round + " 轮：模型思考中");
+        for (int round = 1; unlimited || round <= maxRounds; round++) {
+            progress.stage("第 " + round + " 轮：模型思考中");
             long startMillis = System.currentTimeMillis();
             AgentChatResponse response = chatClient.chat(messages, toolkit.specs());
             long elapsedMillis = System.currentTimeMillis() - startMillis;
@@ -153,9 +185,14 @@ public class AgentReviewer {
             // 原样回填。tool_calls 要带上，reasoning_content 也要带上，少一个下一轮就是 400。
             messages.add(message);
 
-            if (!response.wantsToolCall()) {
-                steps.add(new AgentStep(round, thoughtOf(message), null, null, null, null,
-                        prompt, completion, cached, elapsedMillis));
+            // 模型偶尔会在调工具的那一轮里顺手把整份报告写在 content 上。
+            // 以前只看 tool_calls，这种报告会被整份丢掉（工具照跑、报告白写），
+            // 所以这里先认报告，把它当终答。
+            if (!response.wantsToolCall() || writtenReport(message.content())) {
+                AgentStep finalStep = new AgentStep(round, finalThought(message), null, null, null, null,
+                        prompt, completion, cached, elapsedMillis);
+                steps.add(finalStep);
+                progress.step(finalStep);
                 logTrace(round, steps, total);
                 return new Outcome(parse(message.content()), total.toTokenUsage(pricing),
                         new AgentTrace(round, List.copyOf(steps)));
@@ -163,18 +200,21 @@ public class AgentReviewer {
 
             for (AgentToolCall call : message.toolCalls()) {
                 String toolName = call.function().name();
-                onStage.accept("第 " + round + " 轮：模型读取代码（" + toolName + "）");
+                progress.stage("第 " + round + " 轮：模型读取代码（" + toolName + "）");
                 long toolStartMillis = System.currentTimeMillis();
                 AgentToolkit.Result result = toolkit.execute(toolName, call.function().arguments());
                 messages.add(AgentMessage.tool(call.id(), result.content()));
 
-                steps.add(new AgentStep(round, thoughtOf(message), toolName, result.target(),
+                AgentStep step = new AgentStep(round, thoughtOf(message), toolName, result.target(),
                         call.function().arguments(), snippet(result.content()),
-                        prompt, completion, cached, System.currentTimeMillis() - toolStartMillis));
+                        prompt, completion, cached, System.currentTimeMillis() - toolStartMillis);
+                steps.add(step);
+                progress.step(step);
             }
         }
 
-        return forceFinal(messages, steps, total, maxRounds, onStage);
+        // 不设上限时走不到这里：没有计数器，唯一的出口就是上面那个"不调工具"
+        return forceFinal(messages, steps, total, maxRounds, progress);
     }
 
     /**
@@ -185,9 +225,9 @@ public class AgentReviewer {
      * 让模型就着现有信息把结论给出来，比直接报错有意义得多。
      */
     private Outcome forceFinal(List<AgentMessage> messages, List<AgentStep> steps, Usage total,
-                               int maxRounds, Consumer<String> onStage) {
+                               int maxRounds, ReviewProgress progress) {
         log.warn("agent 达到轮数上限仍未收敛，改为强制输出结论 | 上限={}", maxRounds);
-        onStage.accept("已达轮数上限，要求模型直接给结论");
+        progress.stage("已达轮数上限，要求模型直接给结论");
 
         messages.add(AgentMessage.user(
                 "轮数已经用完。不要再调用任何工具，现在就根据你已经掌握的信息输出评审报告 JSON。"));
@@ -201,13 +241,33 @@ public class AgentReviewer {
         AgentMessage message = response.message();
 
         int round = maxRounds + 1;
-        steps.add(new AgentStep(round, message == null ? null : thoughtOf(message), null, null, null, null,
+        AgentStep finalStep = new AgentStep(round, finalThought(message), null, null, null, null,
                 nullToZero(usage.promptTokens()), nullToZero(usage.completionTokens()),
-                nullToZero(usage.promptCacheHitTokens()), elapsedMillis));
+                nullToZero(usage.promptCacheHitTokens()), elapsedMillis);
+        steps.add(finalStep);
+        progress.step(finalStep);
 
         logTrace(round, steps, total);
         return new Outcome(parse(message == null ? null : message.content()), total.toTokenUsage(pricing),
                 new AgentTrace(round, List.copyOf(steps)));
+    }
+
+    /**
+     * 最后一轮模型说的话。
+     * <p>
+     * 这一轮的 content 就是评审报告本身，不能像工具轮那样当思考过程存进轨迹 ——
+     * 轨迹是给人看的，几 k token 的 JSON 铺在时间轴上没有任何信息量。
+     * 所以这里只认 reasoning_content；模型没单独写思考过程就留空。
+     */
+    private String finalThought(AgentMessage message) {
+        if (message == null) {
+            return null;
+        }
+        String reasoning = message.reasoningContent();
+        if (reasoning != null && !reasoning.isBlank()) {
+            return reasoning;
+        }
+        return writtenReport(message.content()) ? null : message.content();
     }
 
     /**
@@ -220,6 +280,22 @@ public class AgentReviewer {
             return message.content();
         }
         return message.reasoningContent();
+    }
+
+    /**
+     * 这一轮的 content 是不是一份已经写完的报告。
+     * 只认结构（是 JSON 对象、且有 issues 数组），不做字段级校验 ——
+     * 字段级的问题交给 {@code verify} 和解析器，这里只管"要不要收工"。
+     */
+    private boolean writtenReport(String content) {
+        if (content == null || content.isBlank()) {
+            return false;
+        }
+        try {
+            return AgentJson.MAPPER.readTree(content).path("issues").isArray();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private ReviewReport parse(String content) {

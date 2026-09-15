@@ -1,6 +1,7 @@
 package com.zhouziheng.review.task;
 
 import com.zhouziheng.review.ReviewOptions;
+import com.zhouziheng.review.ReviewProgress;
 import com.zhouziheng.review.agent.AgentReviewer;
 import com.zhouziheng.review.agent.AgentStep;
 import com.zhouziheng.review.ReviewService;
@@ -12,6 +13,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -95,7 +97,7 @@ public class ReviewTaskService {
         long startMillis = System.currentTimeMillis();
         try {
             ReviewResult result = reviewService.review(task.repo(), task.commitSha(), options,
-                    stage -> persist(latest(task).running(stage)));
+                    progressOf(task));
             List<AgentStep> steps = result.trace() == null ? List.of() : result.trace().steps();
             ReviewTask finished = latest(task).success(result.report(), result.usage(),
                     result.elapsedMillis(), result.contexts(), steps);
@@ -107,9 +109,39 @@ public class ReviewTaskService {
                     task.id(), task.repo(), task.commitSha(), finished.contexts().size(),
                     steps.isEmpty() ? "-" : result.trace().rounds(), result.elapsedMillis());
         } catch (Exception e) {
-            persist(latest(task).failed(e.getMessage(), System.currentTimeMillis() - startMillis));
+            ReviewTask failed = latest(task).failed(e.getMessage(), System.currentTimeMillis() - startMillis);
+            // 失败前跑过的那几步也落库：SSE 推过的轨迹，刷新页面后不该消失
+            repository.replaceSteps(failed.id(), failed.steps());
+            persist(failed);
             log.error("任务失败 | id={} | repo={} | commit={}", task.id(), task.repo(), task.commitSha(), e);
         }
+    }
+
+    /**
+     * 把评审过程中的进度映射成任务快照。两种粒度的落点刻意不一样：
+     * <ul>
+     *   <li>阶段文案写内存 + 写库，刷新页面也还知道"跑到哪一步了"；</li>
+     *   <li>执行轨迹只写内存 —— 轨迹明细本来就不在 review_task 表里（收尾时整体 replaceSteps），
+     *       每跑一步都 UPDATE 一次库纯属浪费。SSE 推的就是内存快照，页面照样实时看得到。</li>
+     * </ul>
+     * 累积而不是覆盖是关键：只推 stage 那一个字符串的话，后一步会把前一步顶掉，
+     * 用户看到的永远只有最新那一句，整个过程就丢了。
+     */
+    private ReviewProgress progressOf(ReviewTask task) {
+        List<AgentStep> collected = new ArrayList<>();
+        return new ReviewProgress() {
+            @Override
+            public void stage(String text) {
+                persist(latest(task).running(text, List.copyOf(collected)));
+            }
+
+            @Override
+            public void step(AgentStep step) {
+                collected.add(step);
+                ReviewTask current = latest(task);
+                store.save(current.running(current.stage(), List.copyOf(collected)));
+            }
+        };
     }
 
     /**

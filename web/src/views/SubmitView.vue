@@ -25,11 +25,16 @@ const options = reactive({
 
 const isAgent = computed(() => options.strategy === 'agent')
 
-const paramSummary = computed(() =>
-  isAgent.value
-    ? `最多 ${options.maxRounds} 轮`
-    : `${options.maxFiles} 个文件 / ${formatNumber(options.totalBudget)} 字符`,
-)
+// -1 = 不设轮数上限，后端 ReviewOptions.MAX_ROUNDS_UNLIMITED。
+// 单独用一个开关而不是把 el-input-number 的最小值放到 -1：这个值只有在做收敛实验时才有意义。
+const unlimitedRounds = ref(false)
+
+const paramSummary = computed(() => {
+  if (!isAgent.value) {
+    return `${options.maxFiles} 个文件 / ${formatNumber(options.totalBudget)} 字符`
+  }
+  return unlimitedRounds.value ? '不设轮数上限' : `最多 ${options.maxRounds} 轮`
+})
 
 const submitting = ref(false)
 const previewing = ref(false)
@@ -44,6 +49,7 @@ watch(
     options.maxFiles,
     options.totalBudget,
     options.maxRounds,
+    unlimitedRounds,
   ],
   () => {
     preview.value = null
@@ -67,7 +73,10 @@ async function submit() {
 
   submitting.value = true
   try {
-    const task = await createTask(form.repo.trim(), form.commitSha.trim(), { ...options })
+    const task = await createTask(form.repo.trim(), form.commitSha.trim(), {
+      ...options,
+      maxRounds: unlimitedRounds.value ? -1 : options.maxRounds,
+    })
     // 提交是毫秒级返回的，真正的评审在后台跑，跳到详情页看实时进度
     await router.push(`/tasks/${task.id}`)
   } catch (error) {
@@ -133,12 +142,16 @@ async function runPreview() {
 
           <template v-if="isAgent">
             <el-form-item label="最多轮数">
-              <el-input-number v-model="options.maxRounds" :min="1" :max="20" />
+              <el-input-number v-model="options.maxRounds" :min="1" :max="1000" :disabled="unlimitedRounds" />
               <span class="unit">轮</span>
+              <el-checkbox v-model="unlimitedRounds" class="unlimited">不设上限</el-checkbox>
             </el-form-item>
             <p class="explain">
               模型每读一次代码算一轮。轮数用完它还没收尾的话，会被强制要求直接给结论 ——
-              所以调小不一定省钱，可能只是让它少看几个文件。实测这个 commit 要 8 轮才够。
+              所以调小不一定省钱，可能只是让它少看几个文件。
+              <br />
+              勾上「不设上限」就完全不给兜底，用来看它能不能自己收敛：不会自己停下来就会一直跑，
+              调用费用是真实的，只做实验时用。
             </p>
           </template>
 
@@ -247,6 +260,10 @@ async function runPreview() {
   color: #606266;
   font-size: 13px;
   margin-left: 8px;
+}
+
+.unlimited {
+  margin-left: 16px;
 }
 
 .explain {

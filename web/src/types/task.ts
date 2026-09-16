@@ -22,14 +22,15 @@ export interface ReviewReport {
 /**
  * 上下文策略。两条链路的 diff 完全一样，只有"上下文从哪来"不同：
  * - preload：我们先用符号索引算出 diff 引用了哪些类，把它们的骨架塞进提示词；
- * - agent：什么都不塞，给模型 find_type / read_file 两个工具，让它自己边读边判断。
+ * - agent：什么都不塞，给模型 find_type / list_files / read_file 三个工具，让它自己边读边判断。
  */
 export type ContextStrategy = 'preload' | 'agent'
 
 /**
  * 评审参数，对应后端 ReviewOptions。不传就用后端的默认值。
- * 后端会把它拼成签名（如 f12b15000、agent-r8）当缓存 key 的一部分，
+ * 后端会把它拼成签名（如 f12b15000、agent）当缓存 key 的一部分，
  * 所以改参数（包括换策略）都不会命中上一轮的结果。
+ * agent 模式没有参数 —— 读多少、来回几轮由模型自己定。
  */
 export interface ReviewOptions {
   strategy?: ContextStrategy | null
@@ -37,8 +38,6 @@ export interface ReviewOptions {
   maxFiles?: number | null
   /** 预塞式：召回内容的字符总预算 */
   totalBudget?: number | null
-  /** agent 式：最多允许模型来回几轮。传 -1 表示不设上限（只用于收敛实验，会一直烧钱） */
-  maxRounds?: number | null
 }
 
 /**

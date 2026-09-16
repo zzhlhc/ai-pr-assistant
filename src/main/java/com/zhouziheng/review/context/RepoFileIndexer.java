@@ -7,7 +7,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -64,12 +66,15 @@ public class RepoFileIndexer {
 
         Map<String, String> byPackagePath = new HashMap<>();
         Map<String, String> bySimpleName = new HashMap<>();
+        List<String> paths = new ArrayList<>();
 
         for (GiteeTreeNode node : tree.tree()) {
             String path = node.path();
             if (!"blob".equals(node.type()) || !path.endsWith(".java")) {
                 continue;
             }
+
+            paths.add(path);
 
             int root = path.indexOf(PACKAGE_ROOT);
             if (root >= 0) {
@@ -87,7 +92,7 @@ public class RepoFileIndexer {
         log.info("仓库索引构建完成 | repo={}/{} | java 文件={} | 全限定名={}",
                 owner, repo, bySimpleName.size(), byPackagePath.size());
 
-        return new RepoFileIndex(byPackagePath, bySimpleName);
+        return new RepoFileIndex(Map.copyOf(byPackagePath), Map.copyOf(bySimpleName), List.copyOf(paths));
     }
 
 }

@@ -83,6 +83,7 @@ export function lineRange(argumentsJson: string | null | undefined): string {
 
 const TOOL_LABEL: Record<string, string> = {
   find_type: '查找类',
+  list_files: '列出文件',
   read_file: '读取文件',
 }
 

@@ -69,7 +69,7 @@ public class ReviewService {
         // 两条链路拿到的 diff 完全一样，唯一的差异是"上下文从哪来"。
         // 这样同一个 commit 换策略跑出来的两份报告才有可比性。
         return options.isAgent()
-                ? agentReview(parts, repo, commitSha, commit, diffs, options, progress)
+                ? agentReview(parts, repo, commitSha, commit, diffs, progress)
                 : preloadReview(parts, repo, commitSha, commit, diffs, options, progress);
     }
 
@@ -78,10 +78,10 @@ public class ReviewService {
      * 耗时记的是整条链路（含建索引和每一轮往返），因为它就是要拿来和预塞式的单次调用对比的。
      */
     private ReviewResult agentReview(String[] parts, String repo, String commitSha, GiteeCommit commit,
-                                     List<FileDiff> diffs, ReviewOptions options, ReviewProgress progress) {
+                                     List<FileDiff> diffs, ReviewProgress progress) {
         long startMillis = System.currentTimeMillis();
         AgentReviewer.Outcome outcome = agentReviewer.review(parts[0], parts[1], commitSha,
-                commit.commit().message(), diffs, options, progress);
+                commit.commit().message(), diffs, progress);
         long elapsedMillis = System.currentTimeMillis() - startMillis;
 
         progress.stage("校验行号并整理报告");

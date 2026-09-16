@@ -72,8 +72,7 @@ function stepReason(step: AgentStep): string {
 }
 
 /**
- * 老数据的兜底：v2 之前的轨迹没有 reason，只有模型整段的思考过程
- * （thinking 模式下是英文、几千字符）。最后一轮的 content 是报告本身，
+ * 这一轮的完整思考过程。最后一轮的 content 是报告本身，
  * 看起来像 JSON 的直接不显示，免得几 k token 的报告铺在时间轴上。
  */
 function roundThought(step: AgentStep): string {
@@ -90,15 +89,29 @@ function toggleThought(round: number) {
     : [...expandedRounds.value, round]
 }
 
+/** 展开看全文的思考过程。思考默认只留一行，太长的话点一下看全 */
+const expandedThoughts = ref<number[]>([])
+
+function toggleThoughtText(round: number) {
+  expandedThoughts.value = expandedThoughts.value.includes(round)
+    ? expandedThoughts.value.filter((item) => item !== round)
+    : [...expandedThoughts.value, round]
+}
+
 /**
  * 时间轴每行只保留"找什么类 / 读什么文件"。
- * 两种工具的 target 都是路径（find_type 返回的是解析出来的文件路径），所以统一取最后一段：
+ * find_type 和 read_file 的 target 都是路径（find_type 返回的是解析出来的文件路径），所以统一取最后一段：
  * 查类显示类名、不带 .java，读文件显示文件名加行范围 ——
  * 大文件会被模型分成几段读，只显示文件名的话看起来像把同一个文件读了两次。
+ * list_files 是例外：它的 target 是模型填的关键词（不是路径），直接原样显示成"列出 xxx"，
+ * 这样在轨迹里能看出它是用什么词找到候选的。
  */
 function stepLabel(step: AgentStep): string {
   if (!step.target) {
     return ''
+  }
+  if (step.toolName === 'list_files') {
+    return `列出 ${step.target}`
   }
   const name = fileName(step.target)
   if (step.toolName !== 'read_file') {
@@ -180,9 +193,12 @@ const rounds = computed<RoundGroup[]>(() => {
   return groups.filter((group) => group.final || group.actions.length > 0)
 })
 
-/** 优先显示模型填的理由；老数据没有 reason 才退回整段思考过程 */
+/**
+ * 显示模型当场填的理由（工具参数里的 reason，40 字以内）。
+ * v3 之前的老数据没有 reason，这一行会空掉 —— 那一轮的思考过程仍然在下面那行显示，不会丢东西。
+ */
 function roundNote(group: RoundGroup): string {
-  return group.reasons.length ? group.reasons.join('；') : group.thought
+  return group.reasons.join('；')
 }
 
 const contexts = computed(() => task.value?.contexts ?? [])
@@ -303,13 +319,23 @@ onUnmounted(() => unsubscribe?.())
             >
               {{ roundNote(group) }}
             </p>
+            <p
+              v-if="group.thought"
+              class="step-thought step-thought-detail"
+              :class="{ expanded: expandedThoughts.includes(group.round) }"
+              title="点击展开或收起"
+              @click="toggleThoughtText(group.round)"
+            >
+              {{ group.thought }}
+            </p>
           </el-timeline-item>
         </el-timeline>
 
         <p v-if="!running" class="hint">
           每一轮都是模型自己的决定：先看 diff 里不认识的名字，再决定去查哪个类、读哪个文件。
           查找类只是读取的前置步骤，所以只在"没读到代码"时才单独显示。
-          每轮下面那段灰字是模型当场填的理由（工具参数里的 reason），点一下可以展开。
+          每轮下面第一行灰字是模型当场填的理由（工具参数里的 reason，40 字以内），
+          以"思考："开头的那行是它这一轮的完整思考过程 —— 理由默认留两行、思考默认留一行，点一下都能看全文。
           轨迹里没出现的文件，说明它判断不需要看 —— 上下文不是我们事先备好的，而是它在循环里用出来的。
         </p>
       </template>
@@ -534,6 +560,16 @@ onUnmounted(() => unsubscribe?.())
 .step-thought.expanded {
   display: block;
   -webkit-line-clamp: unset;
+}
+
+/* 完整的思考过程。默认只留一行，点一下看全文；前缀标一下这是什么，免得和上面的理由混淆 */
+.step-thought-detail {
+  -webkit-line-clamp: 1;
+  color: #b1b3b8;
+}
+
+.step-thought-detail::before {
+  content: '思考：';
 }
 
 .hint {

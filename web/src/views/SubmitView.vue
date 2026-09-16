@@ -15,26 +15,20 @@ const form = reactive({
   commitSha: '6f438275ba06710d71c708ed3e5d5eb7472bdbe8',
 })
 
-// 评审参数，默认值和后端 ReviewOptions 里的一致
+// 评审参数，默认值和后端 ReviewOptions 里的一致。
+// 只有预塞式有参数可调 —— agent 模式看多少由模型自己定，这里没有它的旋钮
 const options = reactive({
   strategy: 'preload' as ContextStrategy,
   maxFiles: 12,
   totalBudget: 15000,
-  maxRounds: 8,
 })
 
 const isAgent = computed(() => options.strategy === 'agent')
 
-// -1 = 不设轮数上限，后端 ReviewOptions.MAX_ROUNDS_UNLIMITED。
-// 单独用一个开关而不是把 el-input-number 的最小值放到 -1：这个值只有在做收敛实验时才有意义。
-const unlimitedRounds = ref(false)
-
-const paramSummary = computed(() => {
-  if (!isAgent.value) {
-    return `${options.maxFiles} 个文件 / ${formatNumber(options.totalBudget)} 字符`
-  }
-  return unlimitedRounds.value ? '不设轮数上限' : `最多 ${options.maxRounds} 轮`
-})
+// agent 没有参数，所以这个摘要只服务预塞式
+const paramSummary = computed(
+  () => `${options.maxFiles} 个文件 / ${formatNumber(options.totalBudget)} 字符`,
+)
 
 const submitting = ref(false)
 const previewing = ref(false)
@@ -48,8 +42,6 @@ watch(
     options.strategy,
     options.maxFiles,
     options.totalBudget,
-    options.maxRounds,
-    unlimitedRounds,
   ],
   () => {
     preview.value = null
@@ -75,7 +67,6 @@ async function submit() {
   try {
     const task = await createTask(form.repo.trim(), form.commitSha.trim(), {
       ...options,
-      maxRounds: unlimitedRounds.value ? -1 : options.maxRounds,
     })
     // 提交是毫秒级返回的，真正的评审在后台跑，跳到详情页看实时进度
     await router.push(`/tasks/${task.id}`)
@@ -124,8 +115,9 @@ async function runPreview() {
 
       <p class="strategy-explain">
         <template v-if="isAgent">
-          <b>Agent 式</b>：只给模型 diff 和两个工具（按类名查路径、按行号读文件），
-          上下文由它自己一轮轮读出来。能追到 import 之外、藏在调用链里的引用，代价是轮数不可预测。
+          <b>Agent 式</b>：只给模型 diff 和三个工具（按类名查路径、按关键词列文件、按行号读文件），
+          上下文由它自己一轮轮读出来 —— 读几个文件、来回几轮都由它自己决定，没有参数可调。
+          能追到 import 之外、藏在调用链里的引用，代价是耗时和费用不可预测。
         </template>
         <template v-else>
           <b>预塞式</b>：先用符号索引算出 diff 引用到的类，把它们压缩成「骨架」一次性塞进提示词。
@@ -133,45 +125,28 @@ async function runPreview() {
         </template>
       </p>
 
-      <el-collapse class="advanced">
+      <el-collapse v-if="!isAgent" class="advanced">
         <el-collapse-item name="params">
           <template #title>
-            <span class="advanced-title">{{ isAgent ? 'Agent 参数' : 'RAG 召回参数' }}</span>
+            <span class="advanced-title">RAG 召回参数</span>
             <span class="advanced-current">{{ paramSummary }}</span>
           </template>
 
-          <template v-if="isAgent">
-            <el-form-item label="最多轮数">
-              <el-input-number v-model="options.maxRounds" :min="1" :max="1000" :disabled="unlimitedRounds" />
-              <span class="unit">轮</span>
-              <el-checkbox v-model="unlimitedRounds" class="unlimited">不设上限</el-checkbox>
-            </el-form-item>
-            <p class="explain">
-              模型每读一次代码算一轮。轮数用完它还没收尾的话，会被强制要求直接给结论 ——
-              所以调小不一定省钱，可能只是让它少看几个文件。
-              <br />
-              勾上「不设上限」就完全不给兜底，用来看它能不能自己收敛：不会自己停下来就会一直跑，
-              调用费用是真实的，只做实验时用。
-            </p>
-          </template>
-
-          <template v-else>
-            <el-form-item label="最多召回">
-              <el-input-number v-model="options.maxFiles" :min="1" :max="50" />
-              <span class="unit">个文件</span>
-            </el-form-item>
-            <el-form-item label="字符预算">
-              <el-input-number v-model="options.totalBudget" :min="1000" :max="200000" :step="1000" />
-              <span class="unit">字符</span>
-            </el-form-item>
-            <p class="explain">
-              RAG 的检索环节：diff 里只能看到改动处前后几行，看不到被引用类的定义。
-              评审前会按符号索引把相关类的「骨架」（保留字段和方法签名、丢掉方法体）召回进来一起交给模型。
-              <br />
-              调大召回更全但更贵，调小省钱但可能漏掉关键上下文。改完先点「预览召回」看效果 ——
-              这一步不调用模型，不花钱。
-            </p>
-          </template>
+          <el-form-item label="最多召回">
+            <el-input-number v-model="options.maxFiles" :min="1" :max="50" />
+            <span class="unit">个文件</span>
+          </el-form-item>
+          <el-form-item label="字符预算">
+            <el-input-number v-model="options.totalBudget" :min="1000" :max="200000" :step="1000" />
+            <span class="unit">字符</span>
+          </el-form-item>
+          <p class="explain">
+            RAG 的检索环节：diff 里只能看到改动处前后几行，看不到被引用类的定义。
+            评审前会按符号索引把相关类的「骨架」（保留字段和方法签名、丢掉方法体）召回进来一起交给模型。
+            <br />
+            调大召回更全但更贵，调小省钱但可能漏掉关键上下文。改完先点「预览召回」看效果 ——
+            这一步不调用模型，不花钱。
+          </p>
         </el-collapse-item>
       </el-collapse>
 
@@ -183,7 +158,7 @@ async function runPreview() {
 
     <el-alert type="info" :closable="false" show-icon>
       <template v-if="isAgent">
-        评审要跑 80~120 秒，提交后会自动跳到详情页，
+        评审要跑几分钟（读多少、来回几轮由模型自己定），提交后会自动跳到详情页，
         通过 SSE 实时看到「建索引 → 模型思考 → 读取代码」每一轮的进度，结束后能看到完整执行轨迹。
       </template>
       <template v-else>
@@ -260,10 +235,6 @@ async function runPreview() {
   color: #606266;
   font-size: 13px;
   margin-left: 8px;
-}
-
-.unlimited {
-  margin-left: 16px;
 }
 
 .explain {

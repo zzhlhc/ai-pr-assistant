@@ -1,7 +1,6 @@
 package com.zhouziheng.review.agent;
 
 import com.zhouziheng.gitee.GiteeClient;
-import com.zhouziheng.review.ReviewOptions;
 import com.zhouziheng.review.ReviewProgress;
 import com.zhouziheng.review.TokenPricing;
 import com.zhouziheng.review.agent.dto.AgentChatResponse;
@@ -48,8 +47,13 @@ public class AgentReviewer {
      * v2：补上收尾自查表（原来只有"能支撑结论就停下来"这种主观说法，
      * 实测 6 次评审全部跑到轮数上限，自然收敛 0 次）。
      * v3：要求每次调用工具时用中文写一句话说明理由（轨迹里要直接显示给用户看）。
+     * v4：加「跨模块调用必须追到对端实现」及按 URL 反查 Controller 的步骤；
+     * 要求每一轮的思考过程也用中文书写（轨迹里要展示给用户看）。
+     * v5：URL 反查那一步改成先用 list_files 列候选再读 —— v4 让它"把 URL 段转成驼峰去 find_type"，
+     * 实测它猜的类名和真实文件名对不上时（渠道前缀、-entity 后缀、纯语义命名）只能拿到空结果，
+     * 然后就不再找了。改成先列候选，把"猜"换成"看"。
      */
-    public static final String PROMPT_VERSION = "agent-v3";
+    public static final String PROMPT_VERSION = "agent-v5";
 
     /**
      * 终答的解析器，配置和预塞式那条链路保持完全一致 ——
@@ -70,10 +74,36 @@ public class AgentReviewer {
 
             你可以调用工具去查看仓库里的代码。当你要判断"某个字段会不会是 null""某个方法或成员是否存在"时，
             必须先用 find_type 找到类、再用 read_file 把它的定义读出来，不要凭类名猜测它的实现。
+            不知道类名时不要硬猜：用 list_files 按关键词（URL 路径里的一段、方法名、模块名）列出候选文件，
+            从候选里挑出真正对得上的那个再读。find_type 要求精确类名，猜错只会返回空，没有第二条路。
 
             调用工具时必须在 reason 参数里用中文写一句话说明你为什么要看它（40 字以内），
-            例如"确认 Api.getRequestBody 会不会返回 null"。
+            例如"确认这个方法在入参为空时会不会抛异常"。
             这句话会原样显示在评审轨迹里给用户看，不要写推理过程、不要贴代码、不要用英文。
+
+            你每一轮的思考过程也用中文书写。它同样会显示在评审轨迹里给用户看，
+            所以写你在判断什么、还缺什么信息，不要复述工具参数，也不要用英文。
+
+            跨模块调用必须追到对端实现（重要）：
+            改动里出现 HTTP / Feign / RPC 调用时（HttpUtil、RestTemplate、WebClient、@FeignClient，
+            或者直接拼 URL 字符串），必须在本仓库内找到该接口的实现并读它的方法体，确认三件事：
+            幂等性、分支覆盖（哪些入参走到哪个分支）、异常与异步语义（是否 @Async、失败怎么返回）。
+            这件事不做，报告就是不可信的 —— 你无法判断对端对重复调用、对空入参、对失败分别做了什么。
+
+            判断对端在不在本仓库，只看路径形态：只要文件路径是仓库相对路径（形如 <模块>/src/main/java/...），
+            它就在本仓库内，必须读。不得以"模块名对不上""包名不同""可能是另一个服务或另一个仓库"
+            为由跳过。同一个仓库里模块名和部署的服务名不一致是常见情况。
+
+            按 URL 反查对端实现的步骤：
+            1. 取 URL 里服务前缀之后的第一段路径。例如 host + "/orderItem/detail/query" 里的 orderItem；
+            2. 把它转成驼峰，用 list_files 列一遍候选文件（orderItem → 所有路径里含 orderItem 的文件）。
+               候选里 Controller、Feign / Client 接口、Service 通常会同时出现，一眼就能看出对端在哪个模块，
+               比猜类名可靠得多；
+            3. 候选往往不止一个，必须 read_file 逐个核对"类上的 @RequestMapping + 方法上的
+               @GetMapping/@PostMapping 拼出来的路径"是否与 URL 完全一致，对不上的排除；
+               名字最像的那个未必是对的 —— 它可能只是同名的客户端接口（Feign / Client）而没有实现，
+               也可能类名相同但类上的路径前缀对不上；
+            4. 路径匹配上之后继续读它调用的 Service 实现（ServiceImpl），不要停在 Controller 或 Feign 接口。
 
             评审纪律：
             1. 只指出真实存在的问题，宁缺毋滥。改动没有问题时就返回空的 issues 列表。
@@ -99,7 +129,8 @@ public class AgentReviewer {
 
             收尾判断（每轮结束时自查，三项都满足就立刻输出报告，不要再调工具）：
             1. diff 里每个文件的每个 hunk 都已经看过一遍；
-            2. diff 里所有你原本不认识的符号，要么已经 find_type / read_file 确认过，要么已经记进"待确认"；
+            2. diff 里所有你原本不认识的符号，要么已经用 find_type / list_files / read_file 确认过，
+               要么已经记进"待确认"；
             3. 当前没有"再读一个文件就能多确认一条问题"的待办。
 
             自觉达标之后不要继续读文件：
@@ -116,6 +147,19 @@ public class AgentReviewer {
 
     /** 落进执行轨迹的工具返回摘要长度。轨迹是给人看的，完整返回值没必要留着占地方 */
     private static final int SNIPPET_CHARS = 240;
+
+    /**
+     * 轮数的硬保护上限。这不是可配参数 —— agent 模式没有轮数旋钮。
+     * <p>
+     * 它只是一道防失控的闸：agent 的正常出口是"某一轮不再调工具、直接交报告"，
+     * 实测 40 轮上下就会自己收敛。万一模型陷进死循环（比如反复读同一段代码），
+     * 这个上限把任务停住、走 {@link #forceFinal} 让它就着已有信息给结论 ——
+     * 比让任务一直挂着、token 一直烧下去有意义。正常评审碰不到它。
+     * <p>
+     * 定 120 的原因：实测最长一次自然收敛是 42 轮，留了近三倍余量；
+     * 真跑到 120 轮说明模型出问题了，此时再烧下去也不会变好。
+     */
+    private static final int MAX_ROUNDS_SAFETY_LIMIT = 120;
 
     private final GiteeClient gitee;
     private final RepoFileIndexer indexer;
@@ -141,7 +185,7 @@ public class AgentReviewer {
      *                 页面靠它把完整轨迹实时累积起来，而不是只看到最新那句话。
      */
     public Outcome review(String owner, String repo, String sha, String commitMessage,
-                          List<FileDiff> files, ReviewOptions options, ReviewProgress progress) {
+                          List<FileDiff> files, ReviewProgress progress) {
 
         progress.stage("构建仓库符号索引");
         RepoFileIndex index = indexer.indexOf(owner, repo, sha);
@@ -161,12 +205,10 @@ public class AgentReviewer {
 
         List<AgentStep> steps = new ArrayList<>();
         Usage total = new Usage();
-        int maxRounds = options.maxRoundsOrDefault();
-        // 不设上限时循环只靠模型自己收尾（唯一的出口是"这一轮不调工具"），
-        // 跑不停就一直跑 —— 这是实验配置，代价是真实的调用费用。
-        boolean unlimited = maxRounds == ReviewOptions.MAX_ROUNDS_UNLIMITED;
 
-        for (int round = 1; unlimited || round <= maxRounds; round++) {
+        // 循环没有可配的上限：唯一的正常出口是下面那个"这一轮不调工具、直接给报告"。
+        // MAX_ROUNDS_SAFETY_LIMIT 只是防止模型死循环，正常跑不到。
+        for (int round = 1; round <= MAX_ROUNDS_SAFETY_LIMIT; round++) {
             progress.stage("第 " + round + " 轮：模型思考中");
             long startMillis = System.currentTimeMillis();
             AgentChatResponse response = chatClient.chat(messages, toolkit.specs());
@@ -213,21 +255,20 @@ public class AgentReviewer {
             }
         }
 
-        // 不设上限时走不到这里：没有计数器，唯一的出口就是上面那个"不调工具"
-        return forceFinal(messages, steps, total, maxRounds, progress);
+        return forceFinal(messages, steps, total, progress);
     }
 
     /**
-     * 轮数用完还没收敛时的兜底：再问一次，但这次不给工具。
+     * 触到硬保护上限还没收敛时的兜底：再问一次，但这次不给工具。
      * <p>
-     * 不这么做的话，用户等了两分钟只会拿到一个"超过最大轮数"的失败 ——
-     * 前面那些轮次的 token 已经花掉了，读到的代码也都在上下文里，
-     * 让模型就着现有信息把结论给出来，比直接报错有意义得多。
+     * 正常评审走不到这里。真走到了说明模型在死循环里出不来，
+     * 此时直接报错等于把前面几十轮花掉的 token 一起扔掉 ——
+     * 读到的代码都还在上下文里，让它就着这些信息把结论给出来，比报错有意义得多。
      */
     private Outcome forceFinal(List<AgentMessage> messages, List<AgentStep> steps, Usage total,
-                               int maxRounds, ReviewProgress progress) {
-        log.warn("agent 达到轮数上限仍未收敛，改为强制输出结论 | 上限={}", maxRounds);
-        progress.stage("已达轮数上限，要求模型直接给结论");
+                               ReviewProgress progress) {
+        log.warn("agent 达到轮数硬上限仍未收敛，改为强制输出结论 | 上限={}", MAX_ROUNDS_SAFETY_LIMIT);
+        progress.stage("已触发轮数保护上限，要求模型直接给结论");
 
         messages.add(AgentMessage.user(
                 "轮数已经用完。不要再调用任何工具，现在就根据你已经掌握的信息输出评审报告 JSON。"));
@@ -240,7 +281,7 @@ public class AgentReviewer {
         total.add(usage);
         AgentMessage message = response.message();
 
-        int round = maxRounds + 1;
+        int round = MAX_ROUNDS_SAFETY_LIMIT + 1;
         AgentStep finalStep = new AgentStep(round, finalThought(message), null, null, null, null,
                 nullToZero(usage.promptTokens()), nullToZero(usage.completionTokens()),
                 nullToZero(usage.promptCacheHitTokens()), elapsedMillis);

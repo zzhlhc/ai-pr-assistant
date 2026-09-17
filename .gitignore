@@ -47,3 +47,6 @@ docs/notes/
 ### 前端 ###
 web/node_modules/
 web/dist/
+
+### 部署 ###
+.env

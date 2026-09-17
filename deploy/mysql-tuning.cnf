@@ -1,0 +1,17 @@
+# 放到 /etc/mysql/mysql.conf.d/ai-pr.cnf，然后 systemctl restart mysql
+#
+# Ubuntu 自带的 MySQL 默认值是按 8G 以上的机器给的，这里按 4G 机器压一下。
+[mysqld]
+innodb_buffer_pool_size = 128M
+
+# 性能采集常驻 200MB 左右，个人项目用不上，关掉省内存
+performance_schema = OFF
+
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+# 只有本机一个应用在连，用不着默认的 151
+max_connections = 50
+
+# 评审输出里有中文，binlog 用不到（没有主从）就关掉，省磁盘
+skip-log-bin

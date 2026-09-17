@@ -33,8 +33,8 @@ import java.util.stream.Collectors;
  * 而高层抽象会把中间过程封在里面，最后只给你一个结果对象。
  * 代价是要自己维护消息列表，好处是整条链路完全透明 —— 这正是 agent 最该被看见的部分。
  * <p>
- * 超时也在这里显式设死：预塞式那次踩过的坑（框架默认 60 秒掐断长回答，
- * 报错却是一句极具误导性的 Error reading response）没必要再踩第二遍。
+ * 超时也在这里显式设死：框架把请求级超时默认写死 60 秒，会把长回答掐断，
+ * 报错却是一句极具误导性的 Error reading response。
  * 最后一轮要一次性吐完整份评审报告，是整条链路里最慢的一次调用。
  */
 @Component
@@ -43,7 +43,7 @@ public class AgentChatClient {
     private static final Logger log = LoggerFactory.getLogger(AgentChatClient.class);
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
-    private static final Duration READ_TIMEOUT = Duration.ofMinutes(5);
+    public static final Duration READ_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration RETRY_BACKOFF = Duration.ofSeconds(1);
     private static final int MESSAGE_LIMIT = 120;
 

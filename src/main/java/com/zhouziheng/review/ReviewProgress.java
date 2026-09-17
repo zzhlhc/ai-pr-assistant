@@ -5,7 +5,7 @@ import com.zhouziheng.review.agent.AgentStep;
 /**
  * 评审过程中的进度回调，两档粒度：
  * <ul>
- *   <li>{@link #stage} —— "现在在做什么"的一句话。它是个状态，后一句会顶掉前一句，两条链路都会调。</li>
+ *   <li>{@link #stage} —— "现在在做什么"的一句话。它是个状态，后一句会顶掉前一句。</li>
  *   <li>{@link #step} —— agent 式每跑完一步（调完一次工具、或得出终答）就回调一次，
  *       是累积的履历，不会互相覆盖。</li>
  * </ul>
@@ -16,7 +16,7 @@ public interface ReviewProgress {
 
     void stage(String text);
 
-    /** 预塞式没有这一步，默认什么都不做 */
+    /** 不关心单步明细时用不上 */
     default void step(AgentStep step) {
     }
 

@@ -1,6 +1,6 @@
 package com.zhouziheng.config;
 
-import com.zhouziheng.review.CodeReviewer;
+import com.zhouziheng.review.agent.AgentChatClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.model.openai.autoconfigure.OpenAiChatProperties;
@@ -42,7 +42,7 @@ public class ModelStartupLogger implements ApplicationRunner {
                         └───────────────────────────────────────────────""",
                 chatProperties.getModel(),
                 commonProperties.getBaseUrl(),
-                CodeReviewer.REQUEST_TIMEOUT,
+                AgentChatClient.READ_TIMEOUT,
                 chatProperties.getTimeout(),
                 commonProperties.getTimeout(),
                 chatProperties.getMaxRetries(),

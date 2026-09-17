@@ -1,12 +1,10 @@
 package com.zhouziheng.review.task;
 
-import com.zhouziheng.review.ReviewOptions;
 import com.zhouziheng.review.ReviewProgress;
 import com.zhouziheng.review.agent.AgentReviewer;
 import com.zhouziheng.review.agent.AgentStep;
 import com.zhouziheng.review.ReviewService;
 import com.zhouziheng.review.model.ReviewResult;
-import com.zhouziheng.review.prompt.ReviewPromptBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -41,32 +39,22 @@ public class ReviewTaskService {
         this.executor = executor;
     }
 
-    public ReviewTask submit(String repo, String commitSha) {
-        return submit(repo, commitSha, ReviewOptions.DEFAULT);
-    }
-
     /**
      * 提交一次评审。
      * <p>
-     * 每次提交都真的评一遍，不做"同一个 commit + 同一组参数就复用历史结果"的短路：
+     * 每次提交都真的评一遍，不做"同一个 commit 就复用历史结果"的短路：
      * 重复提交也重新调用模型，宁可多花一次钱。
      * <p>
      * 代价是连点两次、或同事打开同一个链接会各花一次钱；
      * 换来的是"提交一次 = 一次真实评审"，看到的一定是当下模型 + 当下提示词的结论，
-     * 不会因为复用旧结果而让人误以为改了提示词/参数已经生效。
+     * 不会因为复用旧结果而让人误以为改了提示词已经生效。
      */
-    public ReviewTask submit(String repo, String commitSha, ReviewOptions options) {
-        String signature = options.signature();
-        // 两种策略的提示词是两套独立的东西，版本号各记各的
-        String promptVersion = options.isAgent()
-                ? AgentReviewer.PROMPT_VERSION
-                : ReviewPromptBuilder.PROMPT_VERSION;
-
+    public ReviewTask submit(String repo, String commitSha) {
         ReviewTask task = ReviewTask.pending(UUID.randomUUID().toString().substring(0, 8),
-                repo, commitSha, promptVersion);
-        repository.insert(task, signature);
+                repo, commitSha, AgentReviewer.PROMPT_VERSION);
+        repository.insert(task);
         store.save(task);
-        executor.execute(() -> run(task, options));
+        executor.execute(() -> run(task));
         return task;
     }
 
@@ -93,20 +81,18 @@ public class ReviewTaskService {
         return store.stream(id);
     }
 
-    private void run(ReviewTask task, ReviewOptions options) {
+    private void run(ReviewTask task) {
         long startMillis = System.currentTimeMillis();
         try {
-            ReviewResult result = reviewService.review(task.repo(), task.commitSha(), options,
-                    progressOf(task));
+            ReviewResult result = reviewService.review(task.repo(), task.commitSha(), progressOf(task));
             List<AgentStep> steps = result.trace() == null ? List.of() : result.trace().steps();
             ReviewTask finished = latest(task).success(result.report(), result.usage(),
-                    result.elapsedMillis(), result.contexts(), steps);
+                    result.elapsedMillis(), steps);
             repository.replaceIssues(finished.id(), finished.report().issues());
-            repository.replaceContexts(finished.id(), finished.contexts());
             repository.replaceSteps(finished.id(), steps);
             persist(finished);
-            log.info("任务完成 | id={} | repo={} | commit={} | 召回文件={} | agent 轮数={} | 耗时={}ms",
-                    task.id(), task.repo(), task.commitSha(), finished.contexts().size(),
+            log.info("任务完成 | id={} | repo={} | commit={} | agent 轮数={} | 耗时={}ms",
+                    task.id(), task.repo(), task.commitSha(),
                     steps.isEmpty() ? "-" : result.trace().rounds(), result.elapsedMillis());
         } catch (Exception e) {
             ReviewTask failed = latest(task).failed(e.getMessage(), System.currentTimeMillis() - startMillis);

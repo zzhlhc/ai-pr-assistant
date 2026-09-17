@@ -35,7 +35,7 @@ spring:
   ai:
     openai:
       # 连接级超时。⚠️ Spring AI 2.0.1 里请求级的 options.timeout 默认写死 60s，
-      # 会盖过这里的配置，真正生效的是代码里的 CodeReviewer.REQUEST_TIMEOUT。
+      # 会盖过这里的配置，真正生效的是代码里的 AgentChatClient.READ_TIMEOUT。
       # 这里的值留着当兜底。
       timeout: 300s
       # 三个环境变量不设置也能启动，但调用模型会失败。

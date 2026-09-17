@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Loading } from '@element-plus/icons-vue'
+import { ArrowDown, Loading } from '@element-plus/icons-vue'
 import { getTask, subscribeTask } from '../api/task'
 import type { AgentStep, ReviewTask, Severity } from '../types/task'
 import {
   SEVERITY_ORDER,
   SEVERITY_TAG,
+  SEVERITY_TEXT,
   STATUS_TAG,
   STATUS_TEXT,
-  compressionPercent,
   fileName,
-  formatCost,
-  formatNumber,
   formatSeconds,
   formatTime,
   lineRange,
@@ -26,6 +24,8 @@ const route = useRoute()
 const task = ref<ReviewTask | null>(null)
 const loadError = ref('')
 const loading = ref(false)
+// 思考过程默认展开，但这一栏很长，留个开关让读者能先跳到问题清单
+const traceOpen = ref(true)
 
 let unsubscribe: (() => void) | undefined
 
@@ -40,8 +40,7 @@ const severityCounts = computed(() => {
   return counts
 })
 
-// 这次评审参考过的相关代码。历史任务和早期的纯 diff 评审没有这部分，所以整体判空
-// agent 式的执行轨迹。预塞式评审没有这一步，所以整体判空
+// 模型自己读代码的全过程。历史任务没有这一步，所以整体判空
 const steps = computed(() => task.value?.steps ?? [])
 const toolCallCount = computed(() => steps.value.filter((step) => step.toolName).length)
 const agentRounds = computed(() => (steps.value.length ? steps.value[steps.value.length - 1].round : 0))
@@ -56,8 +55,14 @@ const readFiles = computed(() => {
 })
 
 /**
- * 模型给这次调用填的理由，来自工具参数里的 reason（必填）。
- * 这是轨迹里"它为什么要看这个文件"的正文 —— 一句话、中文，比整段思考过程好读得多。
+ * 模型给这次调用填的理由，来自工具参数里的 reason（必填）。轨迹里"它为什么要看这个文件"显示的就是这句。
+ *
+ * 为什么不显示模型自己的思考过程（`step.thought`）：thinking 模式下那部分是 reasoning_content，
+ * 是模型的草稿纸，不是给人读的。实测它既不受提示词约束（写了"用中文"也照样出英文），
+ * 内容也全是内部试错 —— 真实采样过一段：
+ * "Let me grep by reading portions... I can't grep. Let me read the file size first — read 1-60 lines to see, then guess."
+ * 把这句话摆在页面上，用户看到的是"它连工具都不会用"，而它其实只是没意识到自己没有 grep。
+ * 理由参数是契约（必填、40 字以内、中文），可控；思考过程不是。
  */
 function stepReason(step: AgentStep): string {
   if (!step.arguments) {
@@ -69,33 +74,6 @@ function stepReason(step: AgentStep): string {
   } catch {
     return ''
   }
-}
-
-/**
- * 这一轮的完整思考过程。最后一轮的 content 是报告本身，
- * 看起来像 JSON 的直接不显示，免得几 k token 的报告铺在时间轴上。
- */
-function roundThought(step: AgentStep): string {
-  const text = step.thought?.trim()
-  return !text || text.startsWith('{') ? '' : text
-}
-
-/** 展开看全文的轮次。理由默认只留两行，太长的话点一下看全 */
-const expandedRounds = ref<number[]>([])
-
-function toggleThought(round: number) {
-  expandedRounds.value = expandedRounds.value.includes(round)
-    ? expandedRounds.value.filter((item) => item !== round)
-    : [...expandedRounds.value, round]
-}
-
-/** 展开看全文的思考过程。思考默认只留一行，太长的话点一下看全 */
-const expandedThoughts = ref<number[]>([])
-
-function toggleThoughtText(round: number) {
-  expandedThoughts.value = expandedThoughts.value.includes(round)
-    ? expandedThoughts.value.filter((item) => item !== round)
-    : [...expandedThoughts.value, round]
 }
 
 /**
@@ -132,8 +110,6 @@ interface RoundGroup {
   final: boolean
   /** 这一轮每个工具调用各自填的中文理由 */
   reasons: string[]
-  /** 没有 reason 的老数据，退回整段思考过程 */
-  thought: string
   actions: RoundAction[]
 }
 
@@ -170,7 +146,6 @@ const rounds = computed<RoundGroup[]>(() => {
         round: step.round,
         final: !step.toolName,
         reasons: [],
-        thought: roundThought(step),
         actions: [],
       }
       groups.push(group)
@@ -195,15 +170,12 @@ const rounds = computed<RoundGroup[]>(() => {
 
 /**
  * 显示模型当场填的理由（工具参数里的 reason，40 字以内）。
- * v3 之前的老数据没有 reason，这一行会空掉 —— 那一轮的思考过程仍然在下面那行显示，不会丢东西。
+ * v3 之前的老数据没有 reason，这一轮的说明会是空的 —— 轨迹本身不受影响。
  */
 function roundNote(group: RoundGroup): string {
   return group.reasons.join('；')
 }
 
-const contexts = computed(() => task.value?.contexts ?? [])
-const recallChars = computed(() => contexts.value.reduce((sum, file) => sum + file.chars, 0))
-const recallRawChars = computed(() => contexts.value.reduce((sum, file) => sum + file.rawChars, 0))
 
 async function load(id: string) {
   unsubscribe?.()
@@ -280,77 +252,55 @@ onUnmounted(() => unsubscribe?.())
 
       <!-- 轨迹是后端逐步累积推过来的，所以运行中就能看到已经跑完的每一步，不用等结束 -->
       <template v-if="steps.length">
-        <div class="section-title">Agent 执行轨迹（模型自己决定读哪些代码）</div>
+        <div class="section-title collapsible" @click="traceOpen = !traceOpen">
+          <el-icon class="caret" :class="{ folded: !traceOpen }"><ArrowDown /></el-icon>
+          思考过程
+        </div>
 
-        <el-descriptions v-if="!running" :column="4" border size="small" class="stats">
-          <el-descriptions-item label="总轮数">{{ agentRounds }}</el-descriptions-item>
-          <el-descriptions-item label="工具调用">{{ toolCallCount }} 次</el-descriptions-item>
-          <el-descriptions-item label="读过文件">{{ readFiles.length }} 个</el-descriptions-item>
-          <el-descriptions-item label="整链路耗时">
-            {{ formatSeconds(task.elapsedMillis) }}
-          </el-descriptions-item>
-        </el-descriptions>
+        <div v-show="traceOpen">
+          <el-descriptions v-if="!running" :column="4" border size="small" class="stats">
+            <el-descriptions-item label="总轮数">{{ agentRounds }}</el-descriptions-item>
+            <el-descriptions-item label="工具调用">{{ toolCallCount }} 次</el-descriptions-item>
+            <el-descriptions-item label="读过文件">{{ readFiles.length }} 个</el-descriptions-item>
+            <el-descriptions-item label="整链路耗时">
+              {{ formatSeconds(task.elapsedMillis) }}
+            </el-descriptions-item>
+          </el-descriptions>
 
-        <el-timeline class="timeline">
-          <el-timeline-item
-            v-for="group in rounds"
-            :key="group.round"
-            :type="group.final ? 'success' : 'primary'"
-            :hollow="group.final"
-            placement="top"
-          >
-            <div class="step-head">
-              <span class="step-round">第 {{ group.round }} 轮</span>
-              <template v-for="action in group.actions" :key="action.toolName ?? 'final'">
-                <el-tag :type="action.toolName ? 'warning' : 'success'" size="small">
-                  {{ toolLabel(action.toolName) }}
-                </el-tag>
-                <span v-if="action.targets.length" class="step-target">
-                  {{ action.targets.join('、') }}
-                </span>
-              </template>
-            </div>
-            <p
-              v-if="roundNote(group)"
-              class="step-thought"
-              :class="{ expanded: expandedRounds.includes(group.round) }"
-              title="点击展开或收起"
-              @click="toggleThought(group.round)"
+          <el-timeline class="timeline">
+            <el-timeline-item
+              v-for="group in rounds"
+              :key="group.round"
+              :type="group.final ? 'success' : 'primary'"
+              :hollow="group.final"
+              placement="top"
             >
-              {{ roundNote(group) }}
-            </p>
-            <p
-              v-if="group.thought"
-              class="step-thought step-thought-detail"
-              :class="{ expanded: expandedThoughts.includes(group.round) }"
-              title="点击展开或收起"
-              @click="toggleThoughtText(group.round)"
-            >
-              {{ group.thought }}
-            </p>
-          </el-timeline-item>
-        </el-timeline>
+              <div class="step-head">
+                <template v-for="action in group.actions" :key="action.toolName ?? 'final'">
+                  <el-tag :type="action.toolName ? 'warning' : 'success'" size="small">
+                    {{ toolLabel(action.toolName) }}
+                  </el-tag>
+                  <span v-if="action.targets.length" class="step-target">
+                    {{ action.targets.join('、') }}
+                  </span>
+                </template>
+              </div>
+              <p
+                v-if="roundNote(group)"
+                class="step-thought"
+              >
+                {{ roundNote(group) }}
+              </p>
+            </el-timeline-item>
+          </el-timeline>
+        </div>
 
-        <p v-if="!running" class="hint">
-          每一轮都是模型自己的决定：先看 diff 里不认识的名字，再决定去查哪个类、读哪个文件。
-          查找类只是读取的前置步骤，所以只在"没读到代码"时才单独显示。
-          每轮下面第一行灰字是模型当场填的理由（工具参数里的 reason，40 字以内），
-          以"思考："开头的那行是它这一轮的完整思考过程 —— 理由默认留两行、思考默认留一行，点一下都能看全文。
-          轨迹里没出现的文件，说明它判断不需要看 —— 上下文不是我们事先备好的，而是它在循环里用出来的。
-        </p>
       </template>
 
       <template v-if="task.status !== 'FAILED' && !running">
-        <el-descriptions :column="5" border size="small" class="stats">
+        <el-descriptions :column="3" border size="small" class="stats">
           <el-descriptions-item label="问题数">{{ issues.length }}</el-descriptions-item>
           <el-descriptions-item label="耗时">{{ formatSeconds(task.elapsedMillis) }}</el-descriptions-item>
-          <el-descriptions-item label="费用">{{ formatCost(task.usage?.cost) }}</el-descriptions-item>
-          <el-descriptions-item label="token">
-            {{ task.usage?.totalTokens ?? '-' }}
-            <span v-if="task.usage?.cachedTokens" class="hint">
-              （命中缓存 {{ task.usage.cachedTokens }}）
-            </span>
-          </el-descriptions-item>
           <el-descriptions-item label="完成时间">{{ formatTime(task.finishedAt) }}</el-descriptions-item>
         </el-descriptions>
 
@@ -369,7 +319,7 @@ onUnmounted(() => unsubscribe?.())
             size="small"
             class="tag"
           >
-            {{ severity }} {{ severityCounts.get(severity) }}
+            {{ SEVERITY_TEXT[severity] }} {{ severityCounts.get(severity) }}
           </el-tag>
         </div>
 
@@ -387,7 +337,7 @@ onUnmounted(() => unsubscribe?.())
           <el-table-column label="级别" width="110">
             <template #default="{ row }">
               <el-tag :type="SEVERITY_TAG[row.severity as Severity]" size="small">
-                {{ row.severity }}
+                {{ SEVERITY_TEXT[row.severity as Severity] }}
               </el-tag>
             </template>
           </el-table-column>
@@ -400,44 +350,6 @@ onUnmounted(() => unsubscribe?.())
           <el-table-column prop="issue" label="问题" min-width="320" />
         </el-table>
 
-        <template v-if="contexts.length">
-          <div class="section-title">本次 RAG 召回（模型评审时参考的相关代码）</div>
-
-          <el-descriptions :column="4" border size="small" class="stats">
-            <el-descriptions-item label="召回文件">{{ contexts.length }}</el-descriptions-item>
-            <el-descriptions-item label="骨架字符">{{ formatNumber(recallChars) }}</el-descriptions-item>
-            <el-descriptions-item label="原始字符">{{ formatNumber(recallRawChars) }}</el-descriptions-item>
-            <el-descriptions-item label="压缩率">
-              {{ compressionPercent(recallChars, recallRawChars) }}%
-            </el-descriptions-item>
-          </el-descriptions>
-
-          <el-table :data="contexts" size="small" style="width: 100%">
-            <el-table-column label="文件" min-width="260" show-overflow-tooltip>
-              <template #default="{ row }">{{ fileName(row.path) }}</template>
-            </el-table-column>
-            <el-table-column label="路径" min-width="380" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span class="path">{{ row.path }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="骨架" width="100" align="right">
-              <template #default="{ row }">{{ formatNumber(row.chars) }}</template>
-            </el-table-column>
-            <el-table-column label="原始" width="100" align="right">
-              <template #default="{ row }">{{ formatNumber(row.rawChars) }}</template>
-            </el-table-column>
-            <el-table-column label="压缩率" width="90" align="right">
-              <template #default="{ row }">{{ compressionPercent(row.chars, row.rawChars) }}%</template>
-            </el-table-column>
-          </el-table>
-
-          <p class="hint">
-            上面每一条结论都建立在这些上下文之上，所以单独列出来。
-            召回的是「骨架」：保留字段和方法签名、丢掉方法体，用最小的体积让模型看到定义。
-            这部分内容也计入了上面的 token 和费用。
-          </p>
-        </template>
       </template>
     </el-card>
   </div>
@@ -499,6 +411,23 @@ onUnmounted(() => unsubscribe?.())
   margin: 16px 0 8px;
 }
 
+/* 思考过程默认展开，但这一栏比问题清单长，点标题可以收起来 */
+.collapsible {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.caret {
+  transition: transform 0.2s;
+}
+
+.caret.folded {
+  transform: rotate(-90deg);
+}
+
 .detail {
   padding: 4px 16px 12px;
 }
@@ -530,11 +459,6 @@ onUnmounted(() => unsubscribe?.())
   flex-wrap: wrap;
 }
 
-.step-round {
-  font-weight: 600;
-  font-size: 13px;
-}
-
 .step-target {
   color: #606266;
   font-size: 12px;
@@ -542,34 +466,18 @@ onUnmounted(() => unsubscribe?.())
   word-break: break-all;
 }
 
-/* 模型这一轮的解释。默认只留两行，点一下看全文 */
+/* 模型这一轮填的理由。写死在 40 字以内，两行足够；真有超长的也不会把版面撑开 */
 .step-thought {
   margin: 6px 0 0;
   color: #909399;
   font-size: 12px;
   line-height: 1.7;
-  cursor: pointer;
   white-space: pre-wrap;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-.step-thought.expanded {
-  display: block;
-  -webkit-line-clamp: unset;
-}
-
-/* 完整的思考过程。默认只留一行，点一下看全文；前缀标一下这是什么，免得和上面的理由混淆 */
-.step-thought-detail {
-  -webkit-line-clamp: 1;
-  color: #b1b3b8;
-}
-
-.step-thought-detail::before {
-  content: '思考：';
 }
 
 .hint {

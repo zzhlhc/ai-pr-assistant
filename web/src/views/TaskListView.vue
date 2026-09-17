@@ -6,8 +6,6 @@ import type { ReviewStats, TaskSummary } from '../types/task'
 import {
   STATUS_TAG,
   STATUS_TEXT,
-  formatCost,
-  formatNumber,
   formatSeconds,
   formatTime,
   shortSha,
@@ -48,12 +46,6 @@ function schedule() {
   }
 }
 
-/** 一次评审的平均成本 */
-const avgCost = computed(() => {
-  if (!stats.value || !stats.value.successCount) return 0
-  return stats.value.totalCost / stats.value.successCount
-})
-
 onUnmounted(() => window.clearTimeout(timer))
 
 refresh()
@@ -68,19 +60,9 @@ refresh()
         <div class="sub">成功 {{ stats.successCount }}</div>
       </div>
       <div class="stat">
-        <div class="label">累计花费</div>
-        <div class="value">{{ formatCost(stats.totalCost) }}</div>
-        <div class="sub">平均 {{ formatCost(avgCost) }}/次</div>
-      </div>
-      <div class="stat">
         <div class="label">平均耗时</div>
         <div class="value">{{ formatSeconds(stats.avgElapsedMillis) }}</div>
         <div class="sub">含拉取 diff</div>
-      </div>
-      <div class="stat">
-        <div class="label">累计 token</div>
-        <div class="value">{{ formatNumber(stats.totalTokens) }}</div>
-        <div class="sub">输入 + 输出</div>
       </div>
       <div class="stat">
         <div class="label">发现问题</div>
@@ -118,9 +100,6 @@ refresh()
         <el-table-column prop="issueCount" label="问题数" width="90" />
         <el-table-column label="耗时" width="100">
           <template #default="{ row }">{{ formatSeconds(row.elapsedMillis) }}</template>
-        </el-table-column>
-        <el-table-column label="费用" width="110">
-          <template #default="{ row }">{{ formatCost(row.cost) }}</template>
         </el-table-column>
         <el-table-column label="提交时间" width="170">
           <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>

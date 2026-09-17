@@ -1,6 +1,5 @@
 package com.zhouziheng.controller;
 
-import com.zhouziheng.review.ReviewOptions;
 import com.zhouziheng.review.task.ReviewTask;
 import com.zhouziheng.review.task.ReviewTaskService;
 import com.zhouziheng.review.task.TaskSummary;
@@ -35,7 +34,7 @@ public class ReviewTaskController {
      */
     @PostMapping
     public ResponseEntity<ReviewTask> submit(@RequestBody ReviewRequest request) {
-        ReviewTask task = taskService.submit(request.repo(), request.commitSha(), request.optionsOrDefault());
+        ReviewTask task = taskService.submit(request.repo(), request.commitSha());
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(task);
     }
 
@@ -60,13 +59,6 @@ public class ReviewTaskController {
         return taskService.stream(id).map(task -> ServerSentEvent.builder(task).event("task").build());
     }
 
-    /**
-     * @param options 召回参数，不传就用默认值；单独抽成对象是为了让老请求体保持兼容
-     */
-    public record ReviewRequest(String repo, String commitSha, ReviewOptions options) {
-
-        public ReviewOptions optionsOrDefault() {
-            return options == null ? ReviewOptions.DEFAULT : options;
-        }
+    public record ReviewRequest(String repo, String commitSha) {
     }
 }

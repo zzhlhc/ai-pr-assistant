@@ -24,16 +24,13 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * agent 式评审：把"该看哪些代码"的决定权交给模型。
+ * 评审主体：把"该看哪些代码"的决定权交给模型。
  * <p>
- * 和预塞式的分工很明确 —— 两者拿到的 diff 完全一样，区别只有一个：
- * 预塞式由我们算出引用到的类、把它们的骨架一次塞进提示词；agent 式什么都不塞，
- * 只给模型两个工具，让它自己一轮轮去查、去读。上下文不再是"准备好再喂"，
- * 而是模型在循环里"用出来的"。
+ * 不预先准备任何上下文，只给模型三个工具，让它自己一轮轮去查、去读。
+ * 上下文不是"准备好再喂"的，而是模型在循环里"用出来的"。
  * <p>
- * 为什么值得多花这些轮次：符号召回的命中率受限于我们抽取符号的规则。
- * 规则漏掉的引用（比如 diff 里没出现的 import、藏在字符串拼装里的类名），
- * 预塞式永远补不上；而模型在读到某一行时发现"这里我还不确定"，它可以当场再去找。
+ * 为什么值得多花这些轮次：靠规则抽取引用总有漏网的（diff 里没出现的 import、
+ * 藏在字符串拼装里的类名），而模型在读到某一行时发现"这里我还不确定"，可以当场再去找。
  */
 @Component
 public class AgentReviewer {
@@ -42,7 +39,7 @@ public class AgentReviewer {
 
     /**
      * 提示词版本号。改动下面任何一段提示词都要把它 +1，
-     * 理由和 {@link ReviewPromptBuilder#PROMPT_VERSION} 一样：评审结果会被当缓存复用。
+     * 理由：评审结果会被按提示词版本缓存复用。
      * <p>
      * v2：补上收尾自查表（原来只有"能支撑结论就停下来"这种主观说法，
      * 实测 6 次评审全部跑到轮数上限，自然收敛 0 次）。
@@ -56,8 +53,7 @@ public class AgentReviewer {
     public static final String PROMPT_VERSION = "agent-v5";
 
     /**
-     * 终答的解析器，配置和预塞式那条链路保持完全一致 ——
-     * 两条链路的输出格式一样，解析规则就该一样，否则对比出来的差异里会混进解析差异。
+     * 终答的解析器。和请求用同一套配置构造，保证"模型怎么写出来的"和"我们怎么读的"对得上。
      * <p>
      * 刻意声明在 {@link #SYSTEM_PROMPT} 之前：system 提示词末尾要拼它的 schema，
      * 而静态字段按声明顺序初始化，写反了会拿到 null。
@@ -191,7 +187,7 @@ public class AgentReviewer {
         RepoFileIndex index = indexer.indexOf(owner, repo, sha);
         AgentToolkit toolkit = new AgentToolkit(gitee, index, owner, repo, sha);
 
-        // 和预塞式唯一的输入差异：上下文传空。模型想知道什么，自己去查。
+        // 提示词里只有 diff。模型想知道别的什么，自己去查。
         //
         // 报告 schema 拼在 SYSTEM_PROMPT 末尾，不拼在这里：
         // 这份 diff 动辄上万 token，schema 跟在它后面就成了"数据段里的格式说明"，
@@ -201,7 +197,7 @@ public class AgentReviewer {
         List<AgentMessage> messages = new ArrayList<>();
         messages.add(AgentMessage.system(SYSTEM_PROMPT));
         messages.add(AgentMessage.user(
-                promptBuilder.buildUserPrompt(repo, sha, commitMessage, files, List.of())));
+                promptBuilder.buildUserPrompt(repo, sha, commitMessage, files)));
 
         List<AgentStep> steps = new ArrayList<>();
         Usage total = new Usage();
@@ -209,7 +205,7 @@ public class AgentReviewer {
         // 循环没有可配的上限：唯一的正常出口是下面那个"这一轮不调工具、直接给报告"。
         // MAX_ROUNDS_SAFETY_LIMIT 只是防止模型死循环，正常跑不到。
         for (int round = 1; round <= MAX_ROUNDS_SAFETY_LIMIT; round++) {
-            progress.stage("第 " + round + " 轮：模型思考中");
+            progress.stage("第 " + round + " 轮：模型分析中");
             long startMillis = System.currentTimeMillis();
             AgentChatResponse response = chatClient.chat(messages, toolkit.specs());
             long elapsedMillis = System.currentTimeMillis() - startMillis;

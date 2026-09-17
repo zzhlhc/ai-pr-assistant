@@ -1,7 +1,6 @@
 package com.zhouziheng.review.task;
 
 import com.zhouziheng.review.agent.AgentStep;
-import com.zhouziheng.review.context.RecalledFile;
 import com.zhouziheng.review.model.ReviewIssue;
 import com.zhouziheng.review.model.ReviewReport;
 import com.zhouziheng.review.model.Severity;
@@ -20,7 +19,7 @@ import java.util.List;
  * 它目前只有 spring-boot3-starter，为了一个 ORM 把主框架降到 3.x 不划算；
  * 几张表、几条固定 SQL 也用不上 ORM 的动态能力。
  * <p>
- * prompt_version / rag_signature 只作为"这次评审用的哪版提示词、哪组召回参数"的记录留在行上，
+ * prompt_version 只作为"这次评审用的哪版提示词"的记录留在行上，
  * 不参与任何短路逻辑 —— 每条记录都是一次真实跑出来的评审。
  */
 @Repository
@@ -32,18 +31,17 @@ public class ReviewTaskRepository {
         this.jdbc = jdbc;
     }
 
-    public void insert(ReviewTask task, String ragSignature) {
+    public void insert(ReviewTask task) {
         jdbc.sql("""
-                        INSERT INTO review_task (id, repo, commit_sha, prompt_version, rag_signature,
+                        INSERT INTO review_task (id, repo, commit_sha, prompt_version,
                                                  status, stage, issue_count, created_at)
-                        VALUES (:id, :repo, :commitSha, :promptVersion, :ragSignature,
+                        VALUES (:id, :repo, :commitSha, :promptVersion,
                                 :status, :stage, 0, :createdAt)
                         """)
                 .param("id", task.id())
                 .param("repo", task.repo())
                 .param("commitSha", task.commitSha())
                 .param("promptVersion", task.promptVersion())
-                .param("ragSignature", ragSignature)
                 .param("status", task.status().name())
                 .param("stage", task.stage())
                 .param("createdAt", task.createdAt())
@@ -108,25 +106,8 @@ public class ReviewTaskRepository {
         }
     }
 
-    /** 这次评审召回了哪些相关代码，明细同样单独一张表 */
-    public void replaceContexts(String taskId, List<RecalledFile> contexts) {
-        jdbc.sql("DELETE FROM review_task_context WHERE task_id = :taskId").param("taskId", taskId).update();
-        for (RecalledFile context : contexts) {
-            jdbc.sql("""
-                            INSERT INTO review_task_context (task_id, path, skeleton_chars, raw_chars)
-                            VALUES (:taskId, :path, :chars, :rawChars)
-                            """)
-                    .param("taskId", taskId)
-                    .param("path", context.path())
-                    .param("chars", context.chars())
-                    .param("rawChars", context.rawChars())
-                    .update();
-        }
-    }
-
     /**
-     * agent 式评审的执行轨迹。
-     * 它和 contexts 是互补的两种上下文证据：预塞式有 contexts 没 steps，agent 式反过来。
+     * 模型这次评审的执行轨迹：它读了哪些文件、每一轮为什么读。
      */
     public void replaceSteps(String taskId, List<AgentStep> steps) {
         jdbc.sql("DELETE FROM review_agent_step WHERE task_id = :taskId").param("taskId", taskId).update();
@@ -217,7 +198,6 @@ public class ReviewTaskRepository {
 
     private ReviewTask withDetails(ReviewTask task) {
         return task.withReport(new ReviewReport(task.report().summary(), findIssues(task.id())))
-                .withContexts(findContexts(task.id()))
                 .withSteps(findSteps(task.id()));
     }
 
@@ -263,21 +243,6 @@ public class ReviewTaskRepository {
                 .list();
     }
 
-    private List<RecalledFile> findContexts(String taskId) {
-        return jdbc.sql("""
-                        SELECT path, skeleton_chars, raw_chars
-                          FROM review_task_context
-                         WHERE task_id = :taskId
-                         ORDER BY id
-                        """)
-                .param("taskId", taskId)
-                .query((rs, rowNum) -> new RecalledFile(
-                        rs.getString("path"),
-                        rs.getInt("skeleton_chars"),
-                        rs.getInt("raw_chars")))
-                .list();
-    }
-
     private ReviewTask mapTask(ResultSet rs, int rowNum) throws SQLException {
         Integer promptTokens = rs.getObject("prompt_tokens", Integer.class);
         TokenUsage usage = promptTokens == null ? null : new TokenUsage(
@@ -296,7 +261,6 @@ public class ReviewTaskRepository {
                 rs.getString("stage"),
                 // 明细单独查，先放个只有 summary 的空壳
                 new ReviewReport(rs.getString("summary"), List.of()),
-                List.of(),
                 List.of(),
                 rs.getString("error"),
                 usage,

@@ -9,6 +9,19 @@ export const SEVERITY_TAG: Record<Severity, 'danger' | 'warning' | 'primary' | '
   INFO: 'info',
 }
 
+/**
+ * 严重级别的中文名。
+ * 取值和语义跟后端提示词里定义的一致（CRITICAL 会导致线上故障或数据错误、
+ * MAJOR 是明确的缺陷或性能问题、MINOR 可改进、INFO 是提示）。
+ * 只做显示映射：排序和标签配色仍然按英文枚举值走。
+ */
+export const SEVERITY_TEXT: Record<Severity, string> = {
+  CRITICAL: '严重',
+  MAJOR: '重要',
+  MINOR: '次要',
+  INFO: '提示',
+}
+
 export const STATUS_TAG: Record<TaskStatus, 'info' | 'warning' | 'success' | 'danger'> = {
   PENDING: 'info',
   RUNNING: 'warning',
@@ -21,10 +34,6 @@ export const STATUS_TEXT: Record<TaskStatus, string> = {
   RUNNING: '评审中',
   SUCCESS: '已完成',
   FAILED: '失败',
-}
-
-export function formatCost(cost: number | null | undefined): string {
-  return cost == null ? '-' : `¥${cost.toFixed(4)}`
 }
 
 export function formatSeconds(ms: number | null | undefined): string {
@@ -48,15 +57,6 @@ export function fileName(path: string): string {
 }
 
 /** 压缩率：骨架字符数占原始字符数的百分比，例如 68 表示压到了原来的 68% */
-export function compressionPercent(chars: number, rawChars: number): number {
-  return rawChars === 0 ? 0 : Math.round((chars * 100) / rawChars)
-}
-
-/**
- * 从 read_file 的参数里取出模型请求的行范围，例如 "1-160 行"。
- * 模型自己拼的 JSON 不保证合法，解析失败就返回空串；
- * 它只给 path 不给行号时后端会从第 1 行读默认长度，这里不猜具体范围，同样返回空串。
- */
 export function lineRange(argumentsJson: string | null | undefined): string {
   if (!argumentsJson) {
     return ''

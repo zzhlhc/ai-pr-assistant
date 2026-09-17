@@ -1,0 +1,38 @@
+# 放到 /etc/systemd/system/ai-pr.service
+[Unit]
+Description=AI PR Assistant
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-pr
+Group=ai-pr
+WorkingDirectory=/opt/ai-pr
+
+# 密钥和数据库密码都放这里，权限 600，属主 root：
+# 进程以 ai-pr 身份跑，但只有 root 能读这个文件，jar 被拿到也拿不到 Key
+EnvironmentFile=/etc/ai-pr/env
+
+# -Xmx 必须显式给：不加限制时 JVM 默认按物理内存的 1/4 取堆，
+# 4G 机器上光堆就是 1G，叠加元空间和直接内存会跟 MySQL 抢内存。
+# ExitOnOutOfMemoryError 让进程直接退出交给 Restart 策略，好过带着坏状态继续跑。
+ExecStart=/usr/bin/java \
+    -Xmx512m \
+    -XX:+ExitOnOutOfMemoryError \
+    -Duser.timezone=Asia/Shanghai \
+    -Dfile.encoding=UTF-8 \
+    -jar /opt/ai-pr/app.jar
+
+Restart=always
+RestartSec=10
+
+# JVM 收到 SIGTERM 是按 128+15 退出的，不写这行 systemd 会当成启动失败
+SuccessExitStatus=143
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-pr
+
+[Install]
+WantedBy=multi-user.target

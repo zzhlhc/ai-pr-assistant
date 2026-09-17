@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS review_task
     status            VARCHAR(16)  NOT NULL COMMENT 'PENDING/RUNNING/SUCCESS/FAILED',
     stage             VARCHAR(100) COMMENT '当前阶段文案',
     prompt_version    VARCHAR(16)  NOT NULL DEFAULT '' COMMENT '提示词版本，记录这份结果是用哪版提示词跑出来的',
-    rag_signature     VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '召回参数签名，记录这次用的哪组召回参数',
+    rag_signature     VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '历史字段：上下文召回参数签名，召回链路已移除，新记录为空',
     summary           VARCHAR(2000) COMMENT '评审总结',
     error             VARCHAR(2000) COMMENT '失败原因',
     issue_count       INT          NOT NULL DEFAULT 0 COMMENT '问题条数，冗余一列是为了列表页不用去 count',
@@ -27,18 +27,6 @@ CREATE TABLE IF NOT EXISTS review_task
     KEY idx_cache (repo, commit_sha, prompt_version, status)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT '评审任务';
-
-CREATE TABLE IF NOT EXISTS review_task_context
-(
-    id             BIGINT AUTO_INCREMENT,
-    task_id        VARCHAR(32)  NOT NULL,
-    path           VARCHAR(300) NOT NULL COMMENT '被召回的文件路径',
-    skeleton_chars INT          NOT NULL COMMENT '骨架字符数，真正进提示词的部分',
-    raw_chars      INT          NOT NULL COMMENT '文件原始字符数',
-    PRIMARY KEY (id),
-    KEY idx_task_id (task_id)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4 COMMENT '评审召回的相关代码';
 
 CREATE TABLE IF NOT EXISTS review_agent_step
 (
@@ -95,7 +83,7 @@ SET @col_exists := (SELECT COUNT(*)
                        AND TABLE_NAME = 'review_task'
                        AND COLUMN_NAME = 'rag_signature');
 SET @ddl := IF(@col_exists = 0,
-               'ALTER TABLE review_task ADD COLUMN rag_signature VARCHAR(32) NOT NULL DEFAULT "" COMMENT "召回参数签名" AFTER prompt_version',
+               'ALTER TABLE review_task ADD COLUMN rag_signature VARCHAR(32) NOT NULL DEFAULT "" COMMENT "历史字段：上下文召回参数签名" AFTER prompt_version',
                'DO 0');
 PREPARE add_rag_signature FROM @ddl;
 EXECUTE add_rag_signature;

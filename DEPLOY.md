@@ -86,6 +86,8 @@ curl -s localhost/api/stats           # 能返回 JSON 说明 nginx → 应用 �
 ```bash
 journalctl -u ai-pr -f                                  # 应用日志
 journalctl -u ai-pr --since "10 min ago" | tail -50
+ls -lh /opt/ai-pr/logs                                  # 落盘日志，一天一个文件
+tail -f /opt/ai-pr/logs/ai-pr-assistant.log
 systemctl status ai-pr mysql nginx
 tail -f /var/log/nginx/error.log
 
@@ -96,7 +98,8 @@ free -h                 # 看内存和 swap 实际占用
 systemd-cgtop           # 看每个服务的 CPU / 内存
 ```
 
-日志已经限制过：journal 上限 200M，nginx 走 `logrotate`（发行版自带）。
+日志已经限制过：应用日志按天落盘到 `/opt/ai-pr/logs`，保留 30 天、总量封顶 1G，
+同时仍走 journal（上限 200M），nginx 走 `logrotate`（发行版自带）。
 
 ## 七、更新版本
 

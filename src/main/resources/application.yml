@@ -76,3 +76,15 @@ management:
 logging:
   level:
     com.zhouziheng: debug
+  file:
+    # 日志按天落盘，控制台输出依旧保留（systemd 收进 journal，方便 journalctl 实时看）。
+    # 相对路径基于进程工作目录：部署时 systemd 的 WorkingDirectory=/opt/ai-pr，
+    # 即落到 /opt/ai-pr/logs/；要换位置就覆盖 LOG_DIR（写绝对路径）。
+    name: ${LOG_DIR:logs}/ai-pr-assistant.log
+  logback:
+    rollingpolicy:
+      # 默认 10MB 就切一次，一天下来会散成一堆带序号的片段，调大后一天基本就是一个文件
+      max-file-size: 100MB
+      # 留 30 天，总量再封 1G 兜底：日志目录涨到把磁盘写满，问题比丢日志严重得多
+      max-history: 30
+      total-size-cap: 1GB

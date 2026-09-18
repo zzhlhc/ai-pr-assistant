@@ -90,7 +90,8 @@ SQL
 
 echo "==> 5/8 建运行用户和目录"
 id -u "$RUN_USER" >/dev/null 2>&1 || useradd -r -d "$APP_DIR" -s /usr/sbin/nologin "$RUN_USER"
-mkdir -p "$APP_DIR" "$WEB_DIR"
+# logs 目录一起建好并归属运行用户：应用是按天滚动写日志文件的
+mkdir -p "$APP_DIR" "$APP_DIR/logs" "$WEB_DIR"
 chown "$RUN_USER:$RUN_USER" "$APP_DIR"
 chown -R www-data:www-data "$WEB_DIR"
 

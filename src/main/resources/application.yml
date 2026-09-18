@@ -52,6 +52,10 @@ spring:
         timeout: 300s
 
 gitee:
+  # 配了 token 就用认证身份请求：额度比匿名（60 次/小时）高得多，一次评审要花掉
+  # 1 次 commit + 1 次 trees + N 次读文件，匿名额度跑两次就没了。
+  # 代价是可见范围：认证身份只能读**本账号名下**的仓库，读别人的公开仓库会一律 404，
+  # 所以页面上的项目清单是本账号 fork 过来的仓库，见 data.sql。
   token: ${GITEE_TOKEN:}
   base-url: https://gitee.com/api/v5
 

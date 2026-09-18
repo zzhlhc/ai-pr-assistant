@@ -1,5 +1,7 @@
 package com.zhouziheng.review.task;
 
+import com.zhouziheng.gitee.GiteeClient;
+import com.zhouziheng.gitee.dto.GiteeRepoSummary;
 import com.zhouziheng.review.ReviewProgress;
 import com.zhouziheng.review.agent.AgentReviewer;
 import com.zhouziheng.review.agent.AgentStep;
@@ -9,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -29,13 +32,15 @@ public class ReviewTaskService {
     private final ReviewTaskStore store;
     private final ReviewTaskRepository repository;
     private final ReviewService reviewService;
+    private final GiteeClient gitee;
     private final Executor executor;
 
     public ReviewTaskService(ReviewTaskStore store, ReviewTaskRepository repository, ReviewService reviewService,
-                             @Qualifier("reviewExecutor") Executor executor) {
+                             GiteeClient gitee, @Qualifier("reviewExecutor") Executor executor) {
         this.store = store;
         this.repository = repository;
         this.reviewService = reviewService;
+        this.gitee = gitee;
         this.executor = executor;
     }
 
@@ -51,11 +56,32 @@ public class ReviewTaskService {
      */
     public ReviewTask submit(String repo, String commitSha) {
         ReviewTask task = ReviewTask.pending(UUID.randomUUID().toString().substring(0, 8),
-                repo, commitSha, AgentReviewer.PROMPT_VERSION);
+                repo, repoNameOf(repo), commitSha, AgentReviewer.PROMPT_VERSION);
         repository.insert(task);
         store.save(task);
         executor.execute(() -> run(task));
         return task;
+    }
+
+    /**
+     * 仓库的显示名（fork 过来的取原项目，如 若依/RuoYi）。
+     * <p>
+     * 快照字段：这个任务以后一直显示这个名字，不管 Gitee 那边之后怎么变 ——
+     * 也省得列表页为了显示一个名字反复去打 Gitee（它在 SSE 里是高频推的）。
+     * <p>
+     * 查不到就算了，退回 repo 本身。这只是个展示字段，不值得让提交失败。
+     */
+    private String repoNameOf(String repo) {
+        try {
+            return gitee.listMyRepos().stream()
+                    .filter(item -> item.fullName().equals(repo))
+                    .map(GiteeRepoSummary::displayName)
+                    .findFirst()
+                    .orElse(repo);
+        } catch (RestClientException e) {
+            log.warn("查仓库显示名失败，退回 owner/repo | repo={} | {}", repo, e.getMessage());
+            return repo;
+        }
     }
 
     public ReviewTask get(String id) {

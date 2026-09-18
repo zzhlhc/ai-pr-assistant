@@ -232,7 +232,7 @@ onUnmounted(() => unsubscribe?.())
       <template #header>
         <div class="header">
           <div>
-            <span class="repo">{{ task.repo }}</span>
+            <span class="repo">{{ task.repoName || task.repo }}</span>
             <span class="sha">@{{ shortSha(task.commitSha) }}</span>
             <el-tag :type="STATUS_TAG[task.status]" size="small" class="tag">
               {{ STATUS_TEXT[task.status] }}
@@ -247,7 +247,6 @@ onUnmounted(() => unsubscribe?.())
       <div v-if="running" class="running">
         <el-icon class="is-loading"><Loading /></el-icon>
         <span>{{ task.stage }}…</span>
-        <span class="hint">大模型评审通常要 40~90 秒，页面会自动更新</span>
       </div>
 
       <!-- 轨迹是后端逐步累积推过来的，所以运行中就能看到已经跑完的每一步，不用等结束 -->
@@ -388,11 +387,6 @@ onUnmounted(() => unsubscribe?.())
   font-size: 15px;
 }
 
-.hint {
-  color: #909399;
-  font-size: 12px;
-}
-
 .stats {
   margin-bottom: 16px;
 }
@@ -480,10 +474,4 @@ onUnmounted(() => unsubscribe?.())
   overflow: hidden;
 }
 
-.hint {
-  color: #909399;
-  font-size: 12px;
-  line-height: 1.8;
-  margin: 12px 0 0;
-}
 </style>

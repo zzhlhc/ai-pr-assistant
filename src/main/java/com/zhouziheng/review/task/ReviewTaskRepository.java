@@ -33,13 +33,14 @@ public class ReviewTaskRepository {
 
     public void insert(ReviewTask task) {
         jdbc.sql("""
-                        INSERT INTO review_task (id, repo, commit_sha, prompt_version,
+                        INSERT INTO review_task (id, repo, repo_name, commit_sha, prompt_version,
                                                  status, stage, issue_count, created_at)
-                        VALUES (:id, :repo, :commitSha, :promptVersion,
+                        VALUES (:id, :repo, :repoName, :commitSha, :promptVersion,
                                 :status, :stage, 0, :createdAt)
                         """)
                 .param("id", task.id())
                 .param("repo", task.repo())
+                .param("repoName", task.repoName())
                 .param("commitSha", task.commitSha())
                 .param("promptVersion", task.promptVersion())
                 .param("status", task.status().name())
@@ -137,8 +138,8 @@ public class ReviewTaskRepository {
 
     public List<TaskSummary> list() {
         return jdbc.sql("""
-                        SELECT id, repo, commit_sha, status, stage, summary, issue_count, cost, elapsed_ms,
-                               created_at, finished_at
+                        SELECT id, repo, repo_name, commit_sha, status, stage, summary, issue_count, cost,
+                               elapsed_ms, created_at, finished_at
                           FROM review_task
                          ORDER BY created_at DESC
                          LIMIT 100
@@ -146,6 +147,7 @@ public class ReviewTaskRepository {
                 .query((rs, rowNum) -> new TaskSummary(
                         rs.getString("id"),
                         rs.getString("repo"),
+                        rs.getString("repo_name"),
                         rs.getString("commit_sha"),
                         TaskStatus.valueOf(rs.getString("status")),
                         rs.getString("stage"),
@@ -255,6 +257,7 @@ public class ReviewTaskRepository {
         return new ReviewTask(
                 rs.getString("id"),
                 rs.getString("repo"),
+                rs.getString("repo_name"),
                 rs.getString("commit_sha"),
                 rs.getString("prompt_version"),
                 TaskStatus.valueOf(rs.getString("status")),

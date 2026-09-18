@@ -49,8 +49,10 @@ public class AgentReviewer {
      * v5：URL 反查那一步改成先用 list_files 列候选再读 —— v4 让它"把 URL 段转成驼峰去 find_type"，
      * 实测它猜的类名和真实文件名对不上时（渠道前缀、-entity 后缀、纯语义命名）只能拿到空结果，
      * 然后就不再找了。改成先列候选，把"猜"换成"看"。
+     * v6：明确终答不许包 markdown 代码块、不许写成 markdown 报告 ——
+     * 实测模型偶尔这么干，解析直接抛 StreamReadException，把整次评审打死。
      */
-    public static final String PROMPT_VERSION = "agent-v5";
+    public static final String PROMPT_VERSION = "agent-v6";
 
     /**
      * 终答的解析器。和请求用同一套配置构造，保证"模型怎么写出来的"和"我们怎么读的"对得上。
@@ -138,7 +140,9 @@ public class AgentReviewer {
             不影响这份报告的完整性；确认不了的点也不要凭猜测定性成问题。
 
             交付方式：某一轮里不再调用工具、直接输出下面的 JSON，本次评审就正常结束 ——
-            这是设计好的结束方式，不是被中断。JSON 前后不要有别的文字。
+            这是设计好的结束方式，不是被中断。只输出这个 JSON 对象本身：
+            前后不要有别的文字，不要用 ``` 包起来，不要写成 markdown 报告或标题加正文的形式。
+            summary 和 reason 里的中文都放在 JSON 的字符串里，不要跑到 JSON 外面去。
             """ + CONVERTER.getFormat();
 
     /** 落进执行轨迹的工具返回摘要长度。轨迹是给人看的，完整返回值没必要留着占地方 */
@@ -156,6 +160,16 @@ public class AgentReviewer {
      * 真跑到 120 轮说明模型出问题了，此时再烧下去也不会变好。
      */
     private static final int MAX_ROUNDS_SAFETY_LIMIT = 120;
+
+    /**
+     * 模型把报告写成 markdown（而不是 JSON）时，最多再问几次。
+     * 只给一次：这不是"模型能力不够"，而是偶尔忘格式，问一次就回来的占绝大多数；
+     * 真不回来就按纯文本兜底，别把轮数耗在这上面。
+     */
+    private static final int MAX_FORMAT_NUDGES = 1;
+
+    /** summary 列是 VARCHAR(2000)，纯文本兜底时超了会撞上 SQL 报错 */
+    private static final int SUMMARY_MAX_CHARS = 2000;
 
     private final GiteeClient gitee;
     private final RepoFileIndexer indexer;
@@ -201,11 +215,12 @@ public class AgentReviewer {
 
         List<AgentStep> steps = new ArrayList<>();
         Usage total = new Usage();
+        int formatNudges = 0;
 
         // 循环没有可配的上限：唯一的正常出口是下面那个"这一轮不调工具、直接给报告"。
         // MAX_ROUNDS_SAFETY_LIMIT 只是防止模型死循环，正常跑不到。
         for (int round = 1; round <= MAX_ROUNDS_SAFETY_LIMIT; round++) {
-            progress.stage("第 " + round + " 轮：模型分析中");
+            progress.stage("模型分析中");
             long startMillis = System.currentTimeMillis();
             AgentChatResponse response = chatClient.chat(messages, toolkit.specs());
             long elapsedMillis = System.currentTimeMillis() - startMillis;
@@ -223,6 +238,18 @@ public class AgentReviewer {
             // 原样回填。tool_calls 要带上，reasoning_content 也要带上，少一个下一轮就是 400。
             messages.add(message);
 
+            // 模型忘了格式要求、把报告写成 markdown 的时候，先把它拨回来再说 ——
+            // 直接当终答的话，兜底解析出来的报告 issues 一定是空的，和"真的没问题"分不清。
+            if (!response.wantsToolCall() && !writtenReport(message.content())
+                    && formatNudges < MAX_FORMAT_NUDGES) {
+                formatNudges++;
+                progress.stage("模型没有按 JSON 格式输出，要求重新输出");
+                log.warn("模型终答不是 JSON，已要求重出 | 轮次={} | 开头={}", round, snippet(message.content()));
+                messages.add(AgentMessage.user("你上一轮没有输出指定的 JSON 格式。请重新回答："
+                        + "只输出那个 JSON 对象，前后不要加说明文字，也不要用代码块包起来。"));
+                continue;
+            }
+
             // 模型偶尔会在调工具的那一轮里顺手把整份报告写在 content 上。
             // 以前只看 tool_calls，这种报告会被整份丢掉（工具照跑、报告白写），
             // 所以这里先认报告，把它当终答。
@@ -238,7 +265,7 @@ public class AgentReviewer {
 
             for (AgentToolCall call : message.toolCalls()) {
                 String toolName = call.function().name();
-                progress.stage("第 " + round + " 轮：模型读取代码（" + toolName + "）");
+                progress.stage("模型读取代码（" + toolName + "）");
                 long toolStartMillis = System.currentTimeMillis();
                 AgentToolkit.Result result = toolkit.execute(toolName, call.function().arguments());
                 messages.add(AgentMessage.tool(call.id(), result.content()));
@@ -336,7 +363,33 @@ public class AgentReviewer {
     }
 
     private ReviewReport parse(String content) {
-        return CONVERTER.convert(content == null ? "" : content);
+        if (content == null || content.isBlank()) {
+            return new ReviewReport("模型没有返回任何内容", List.of());
+        }
+        try {
+            return CONVERTER.convert(extractJson(content));
+        } catch (Exception e) {
+            // 几十轮的 token 都花掉了，模型的原话至少还有内容，不能因为格式问题把整次评审判死。
+            // 留一条 warn：这类事故属于提示词没约束住，得能看见，但不该让用户对着红色堆栈发愣。
+            log.warn("模型终答不是合法 JSON，按纯文本兜底 | {}", e.getMessage());
+            return new ReviewReport(summaryOf(content), List.of());
+        }
+    }
+
+    /**
+     * 抠出最外层的 JSON 对象。
+     * <p>
+     * 模型偶尔在 JSON 前面写一句"好的，我的评审如下"，或者用 ```json 代码块包起来，
+     * BeanOutputConverter 只认纯 JSON，先剥掉这些壳。
+     */
+    private static String extractJson(String content) {
+        int start = content.indexOf('{');
+        int end = content.lastIndexOf('}');
+        return start >= 0 && end > start ? content.substring(start, end + 1) : content;
+    }
+
+    private static String summaryOf(String content) {
+        return content.length() <= SUMMARY_MAX_CHARS ? content : content.substring(0, SUMMARY_MAX_CHARS);
     }
 
     private void logTrace(int rounds, List<AgentStep> steps, Usage total) {

@@ -22,6 +22,7 @@ import java.util.List;
  */
 public record ReviewTask(String id,
                          String repo,
+                         String repoName,
                          String commitSha,
                          String promptVersion,
                          TaskStatus status,
@@ -35,8 +36,9 @@ public record ReviewTask(String id,
                          LocalDateTime startedAt,
                          LocalDateTime finishedAt) {
 
-    public static ReviewTask pending(String id, String repo, String commitSha, String promptVersion) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.PENDING, "排队中",
+    public static ReviewTask pending(String id, String repo, String repoName, String commitSha,
+                                     String promptVersion) {
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, TaskStatus.PENDING, "排队中",
                 null, List.of(), null, null, null, LocalDateTime.now(), null, null);
     }
 
@@ -49,33 +51,33 @@ public record ReviewTask(String id,
      * 只靠 stage 那一个字符串的话，后一步会把前一步顶掉，过程就没了。
      */
     public ReviewTask running(String stage, List<AgentStep> steps) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.RUNNING, stage,
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, TaskStatus.RUNNING, stage,
                 null, steps == null ? List.of() : steps, null, null, null, createdAt,
                 startedAt == null ? LocalDateTime.now() : startedAt, null);
     }
 
     public ReviewTask success(ReviewReport report, TokenUsage usage, long elapsedMillis,
                               List<AgentStep> steps) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.SUCCESS, "已完成",
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, TaskStatus.SUCCESS, "已完成",
                 report, steps == null ? List.of() : steps,
                 null, usage, elapsedMillis, createdAt, startedAt, LocalDateTime.now());
     }
 
     public ReviewTask failed(String error, long elapsedMillis) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, TaskStatus.FAILED, "已失败",
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, TaskStatus.FAILED, "已失败",
                 null, steps, error, null, elapsedMillis,
                 createdAt, startedAt, LocalDateTime.now());
     }
 
     /** 从库里读出来只带了 summary，明细要单独查一次再补进来 */
     public ReviewTask withReport(ReviewReport report) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, status, stage, report, steps,
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, status, stage, report, steps,
                 error, usage, elapsedMillis, createdAt, startedAt, finishedAt);
     }
 
     /** 同理，执行轨迹是单独查一次再补进来 */
     public ReviewTask withSteps(List<AgentStep> steps) {
-        return new ReviewTask(id, repo, commitSha, promptVersion, status, stage, report, steps,
+        return new ReviewTask(id, repo, repoName, commitSha, promptVersion, status, stage, report, steps,
                 error, usage, elapsedMillis, createdAt, startedAt, finishedAt);
     }
 

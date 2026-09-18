@@ -17,6 +17,8 @@ spring:
           model: deepseek-chat
           temperature: 0.2
 
+# Gitee 私人令牌（设置 → 私人令牌，勾选 projects 只读即可）。
+# 不配也能启动，但会退化为匿名请求：60 次/小时额度，一次评审就基本用光。
+# 注意：带令牌的身份只能读本账号名下的仓库，清单里的项目都要先 fork 到自己账号。
 gitee:
-  # 在 https://gitee.com/profile/personal_access_tokens 生成，勾选 projects 只读即可
-  token: 你的gitee令牌
+  token: 你的Gitee私人令牌

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS review_task
 (
     id                VARCHAR(32)  NOT NULL COMMENT '任务ID，uuid 前 8 位',
     repo              VARCHAR(200) NOT NULL COMMENT '仓库 owner/repo',
+    repo_name         VARCHAR(200) COMMENT '仓库显示名，如 若依/RuoYi；只是给人看的，接口调用一律用 repo',
     commit_sha        VARCHAR(64)  NOT NULL,
     status            VARCHAR(16)  NOT NULL COMMENT 'PENDING/RUNNING/SUCCESS/FAILED',
     stage             VARCHAR(100) COMMENT '当前阶段文案',
@@ -62,6 +63,32 @@ CREATE TABLE IF NOT EXISTS review_issue
     KEY idx_task_id (task_id)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT '评审问题明细';
+
+CREATE TABLE IF NOT EXISTS review_repo_catalog
+(
+    id          BIGINT AUTO_INCREMENT,
+    full_name   VARCHAR(200) NOT NULL COMMENT '仓库 owner/repo，正是提交评审时要的写法',
+    name        VARCHAR(200) NOT NULL COMMENT '仓库名',
+    description VARCHAR(500) COMMENT '仓库描述，下拉框里显示',
+    stars       INT          NOT NULL DEFAULT 0 COMMENT 'star 数，只用于排序和展示',
+    created_at  DATETIME     NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_full_name (full_name),
+    KEY idx_stars (stars)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4 COMMENT '预置的 Gitee Java 项目清单';
+
+SET @col_exists := (SELECT COUNT(*)
+                      FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE()
+                       AND TABLE_NAME = 'review_task'
+                       AND COLUMN_NAME = 'repo_name');
+SET @ddl := IF(@col_exists = 0,
+               'ALTER TABLE review_task ADD COLUMN repo_name VARCHAR(200) COMMENT "仓库显示名，如 若依/RuoYi" AFTER repo',
+               'DO 0');
+PREPARE add_repo_name FROM @ddl;
+EXECUTE add_repo_name;
+DEALLOCATE PREPARE add_repo_name;
 
 -- 加列不能用 IF NOT EXISTS（那是 MariaDB 的语法），所以自己查一遍元数据。
 -- 这是轻量项目里最省事的幂等 DDL 写法，正经项目应该上 Flyway / Liquibase。

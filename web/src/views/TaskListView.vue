@@ -86,7 +86,9 @@ refresh()
         @row-click="(row: TaskSummary) => router.push(`/tasks/${row.id}`)"
       >
         <el-table-column prop="id" label="任务" width="100" />
-        <el-table-column prop="repo" label="仓库" min-width="180" show-overflow-tooltip />
+        <el-table-column label="仓库" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.repoName || row.repo }}</template>
+        </el-table-column>
         <el-table-column label="commit" width="110">
           <template #default="{ row }">{{ shortSha(row.commitSha) }}</template>
         </el-table-column>

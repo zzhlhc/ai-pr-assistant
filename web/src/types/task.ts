@@ -51,7 +51,10 @@ export interface TokenUsage {
 /** 任务完整快照，SSE 推送和详情接口返回的都是它 */
 export interface ReviewTask {
   id: string
+  /** 自己账号下的真实路径，接口调用和落库都用它 */
   repo: string
+  /** 仓库显示名，如 若依/RuoYi；老数据为 null，显示时退回 repo */
+  repoName: string | null
   commitSha: string
   /** 这条结果是用哪版提示词跑出来的 */
   promptVersion: string
@@ -72,6 +75,8 @@ export interface ReviewTask {
 export interface TaskSummary {
   id: string
   repo: string
+  /** 仓库显示名，如 若依/RuoYi；老数据为 null，显示时退回 repo */
+  repoName: string | null
   commitSha: string
   status: TaskStatus
   stage: string | null

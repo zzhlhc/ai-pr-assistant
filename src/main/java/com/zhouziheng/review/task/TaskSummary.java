@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
  */
 public record TaskSummary(String id,
                           String repo,
+                          String repoName,
                           String commitSha,
                           TaskStatus status,
                           String stage,

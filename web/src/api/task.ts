@@ -1,11 +1,5 @@
-import axios from 'axios'
+import { http } from './http'
 import type { ReviewStats, ReviewTask, TaskSummary } from '../types/task'
-
-const http = axios.create({
-  baseURL: '/api',
-  // 提交和查询都是毫秒级返回，真正耗时的评审在后台跑，所以不需要长超时
-  timeout: 15_000,
-})
 
 export async function createTask(repo: string, commitSha: string): Promise<ReviewTask> {
   const { data } = await http.post<ReviewTask>('/tasks', { repo, commitSha })
